@@ -1,3 +1,4 @@
 .env
 minio-data/*
 */__pycache__/
+iot-gateway/test/
