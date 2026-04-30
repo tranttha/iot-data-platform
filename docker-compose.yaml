@@ -2,7 +2,7 @@ version: '3.9'
 
 # Profiles
 # ─────────────────────────────────────────────────────────────────────────────
-#  ingest     → Zookeeper + Kafka + IoT Gateways + kafka-spark-consumer + MinIO /raw
+#  ingest     → Zookeeper + Kafka + IoT Gateways + Spark cluster + kafka-spark-consumer → MinIO /raw
 #  processing → MinIO + spark-stream (reads /raw, writes to /warehouse)
 #  serve      → MinIO + Trino + Grafana
 #  full       → All services (end-to-end testing)
@@ -137,7 +137,7 @@ services:
 
     container_name: iot-gateway-2
 
-    profiles: [ingest, full]
+    profiles: [ingest, processing, full]
 
     depends_on:
       - kafka
@@ -154,7 +154,44 @@ services:
       POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS}
 
   ####################################################
-  # KAFKA RAW CONSUMER
+  # SPARK CLUSTER (INGESTION)
+  ####################################################
+
+  spark-master:
+    image: bitnami/spark:3.5
+    container_name: spark-master
+
+    profiles: [ingest, processing, full]
+
+    environment:
+      SPARK_MODE: master
+      SPARK_MASTER_PORT: 7077
+      SPARK_MASTER_WEBUI_PORT: 8081
+
+    ports:
+      - "7077:7077"
+      - "8081:8081"
+
+  spark-worker:
+    image: bitnami/spark:3.5
+    container_name: spark-worker
+
+    profiles: [ingest, processing, full]
+
+    depends_on:
+      - spark-master
+
+    environment:
+      SPARK_MODE: worker
+      SPARK_MASTER_URL: ${SPARK_MASTER_URL}
+      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY}
+      SPARK_WORKER_CORES: ${SPARK_WORKER_CORES}
+
+    ports:
+      - "8082:8081"
+
+  ####################################################
+  # KAFKA RAW CONSUMER (SPARK STRUCTURED STREAMING)
   ####################################################
 
   kafka-spark-consumer:
@@ -166,15 +203,22 @@ services:
     profiles: [ingest, full]
 
     depends_on:
+      - spark-master
       - kafka
       - minio
 
     environment:
+      SPARK_MASTER_URL: ${SPARK_MASTER_URL}
+
       KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+      KAFKA_TOPIC: ${KAFKA_TOPIC}
 
       MINIO_ENDPOINT: ${MINIO_ENDPOINT}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+
+    volumes:
+      - ivy2_cache:/root/.ivy2 # Cache for Spark dependencies
 
   ####################################################
   # SPARK STREAM PROCESSING
@@ -189,6 +233,7 @@ services:
     profiles: [processing, full]
 
     depends_on:
+      - spark-master
       - minio
 
     environment:
@@ -234,4 +279,7 @@ services:
     environment:
       GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER}
       GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD}
+
+volumes:
+  ivy2_cache:
 

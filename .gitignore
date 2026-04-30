@@ -2,3 +2,4 @@
 minio-data/*
 */__pycache__/
 iot-gateway/test/
+ivy2_cache/*

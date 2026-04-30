@@ -1,0 +1,3 @@
+# PySpark is provided by the bitnami/spark base image.
+# Add any extra Python-only dependencies here.
+pyspark==3.5.1
