@@ -95,6 +95,16 @@ Each IoT gateway container queries a different geographic coordinate, simulating
 - The raw JSON response is enriched with system metadata (`iot_device_id`, `ingestion_time`) and published to a **Kafka topic** via the Kafka Producer API.
 - **Kafka** acts as a distributed durable buffer, decoupling data producers from consumers and enabling horizontal scalability and fault tolerance.
 
+**Kafka topic design:**
+
+| Property | Value |
+|---|---|
+| Topic | `iot-sensor-data` (single topic, created once) |
+| Partition key | `DEVICE_ID` (consistent hash → same partition per device) |
+| `num_partitions` | ≥ number of gateway containers (2 by default, sized for headroom) |
+
+Using `DEVICE_ID` as the partition key guarantees strict per-device ordering, which is required for correct deduplication and time-windowing in Spark Structured Streaming. Date-based partitioning is applied at the storage layer (MinIO path layout) rather than at the broker, where dynamic topic-per-date would create unbounded topic sprawl.
+
 ### 2. Processing & Storage Layer
 
 **Raw Zone** — A `kafka-consumer-raw` process reads JSON records from Kafka and writes them directly to the `raw/` bucket in MinIO as-is.
