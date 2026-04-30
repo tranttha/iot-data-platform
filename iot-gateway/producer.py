@@ -21,19 +21,21 @@ KAFKA_BOOTSTRAP_SERVERS = os.environ["KAFKA_BOOTSTRAP_SERVERS"]
 KAFKA_TOPIC             = os.environ.get("KAFKA_TOPIC", "iot-sensor-data")
 POLL_INTERVAL_SECONDS   = int(os.environ.get("POLL_INTERVAL_SECONDS", "60"))
 
-# Open-Meteo free-tier rate limit shared across all gateway containers.
-# Attribution required: https://open-meteo.com/ (CC-BY 4.0)
+# Open-Meteo free-tier rate limits shared across all gateway containers.
+# Binding constraint is the daily quota (10,000/day).
 OPENMETEO_MAX_CALLS_PER_MIN = int(os.environ.get("OPENMETEO_MAX_CALLS_PER_MIN", "600"))
 NUM_GATEWAY_CONTAINERS       = int(os.environ.get("NUM_GATEWAY_CONTAINERS", "1"))
 
-_per_container_budget   = OPENMETEO_MAX_CALLS_PER_MIN / NUM_GATEWAY_CONTAINERS  # calls/min per container
-_min_interval           = 60.0 / _per_container_budget                           # seconds
+_min_by_minute = (NUM_GATEWAY_CONTAINERS * 60)      / 600    # per-minute quota
+_min_by_hour   = (NUM_GATEWAY_CONTAINERS * 3600)    / 5000   # per-hour quota
+_min_by_day    = (NUM_GATEWAY_CONTAINERS * 86400)   / 10000  # per-day quota  ← binding
+_min_interval  = max(_min_by_minute, _min_by_hour, _min_by_day)
 
 if POLL_INTERVAL_SECONDS < _min_interval:
     raise ValueError(
         f"POLL_INTERVAL_SECONDS={POLL_INTERVAL_SECONDS} would exceed the Open-Meteo rate limit. "
-        f"With {NUM_GATEWAY_CONTAINERS} container(s) and a {OPENMETEO_MAX_CALLS_PER_MIN} calls/min "
-        f"total budget, the minimum safe interval is {_min_interval:.2f}s per container."
+        f"With {NUM_GATEWAY_CONTAINERS} container(s) the minimum safe interval is "
+        f"{_min_interval:.1f}s (bound by daily quota of 10,000 calls/day)."
     )
 
 # ── Open-Meteo API ────────────────────────────────────────────────────────────

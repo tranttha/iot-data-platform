@@ -4,13 +4,16 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, get_json_object, to_date
 
 # ── Environment configuration ─────────────────────────────────────────────────
-SPARK_MASTER_URL      = os.environ.get("SPARK_MASTER_URL", "spark://spark-master:7077")
+SPARK_MASTER_URL        = os.environ.get("SPARK_MASTER_URL", "spark://spark-master:7077")
 KAFKA_BOOTSTRAP_SERVERS = os.environ["KAFKA_BOOTSTRAP_SERVERS"]
-KAFKA_TOPIC           = os.environ.get("KAFKA_TOPIC", "iot-sensor-data")
-MINIO_ENDPOINT        = os.environ["MINIO_ENDPOINT"]
-MINIO_ACCESS_KEY      = os.environ["MINIO_ACCESS_KEY"]
-MINIO_SECRET_KEY      = os.environ["MINIO_SECRET_KEY"]
-RAW_BUCKET            = "s3a://raw"
+KAFKA_TOPIC             = os.environ.get("KAFKA_TOPIC", "iot-sensor-data")
+MINIO_ENDPOINT          = os.environ["MINIO_ENDPOINT"]
+MINIO_ACCESS_KEY        = os.environ["MINIO_ACCESS_KEY"]
+MINIO_SECRET_KEY        = os.environ["MINIO_SECRET_KEY"]
+# Match trigger interval to producer poll rate so each batch processes
+# exactly the messages emitted since the last trigger.
+POLL_INTERVAL_SECONDS   = int(os.environ.get("POLL_INTERVAL_SECONDS", "60"))
+RAW_BUCKET              = "s3a://raw"
 
 spark = (
     SparkSession.builder
@@ -23,11 +26,6 @@ spark = (
     .config("spark.hadoop.fs.s3a.path.style.access",   "true")
     .config("spark.hadoop.fs.s3a.impl",
             "org.apache.hadoop.fs.s3a.S3AFileSystem")
-    # Kafka connector jars are provided by the image
-    .config("spark.jars.packages",
-            "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,"
-            "org.apache.hadoop:hadoop-aws:3.3.4,"
-            "com.amazonaws:aws-java-sdk-bundle:1.12.262")
     .getOrCreate()
 )
 
@@ -69,7 +67,7 @@ query = (
     .option("checkpointLocation", f"{RAW_BUCKET}/_checkpoints/kafka-raw-consumer")
     .partitionBy("ingestion_date", "iot_device_id")
     .outputMode("append")
-    .trigger(processingTime="30 seconds")
+    .trigger(processingTime=f"{POLL_INTERVAL_SECONDS} seconds")
     .start()
 )
 
