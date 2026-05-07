@@ -3,3 +3,5 @@ minio-data/*
 */__pycache__/
 iot-gateway/test/
 ivy2_cache/*
+chuong3.txt
+chuong4.txt

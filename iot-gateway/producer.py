@@ -1,11 +1,14 @@
 import json
 import logging
-import os
+import math
+import random
+import sys
 import time
 from datetime import datetime, timezone
 
-import requests
 from confluent_kafka import Producer
+
+import config
 
 logging.basicConfig(
     level=logging.INFO,
@@ -13,109 +16,184 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Environment configuration ─────────────────────────────────────────────────
-DEVICE_ID               = os.environ["DEVICE_ID"]
-LATITUDE                = float(os.environ["LATITUDE"])
-LONGITUDE               = float(os.environ["LONGITUDE"])
-KAFKA_BOOTSTRAP_SERVERS = os.environ["KAFKA_BOOTSTRAP_SERVERS"]
-KAFKA_TOPIC             = os.environ.get("KAFKA_TOPIC", "iot-sensor-data")
-POLL_INTERVAL_SECONDS   = int(os.environ.get("POLL_INTERVAL_SECONDS", "60"))
+# ── Weather condition catalogue (OWM codes, main, description) ────────────────
+_WEATHER_CONDITIONS = [
+    (800, "Clear",        "clear sky"),
+    (801, "Clouds",       "few clouds: 11-25%"),
+    (802, "Clouds",       "scattered clouds: 25-50%"),
+    (803, "Clouds",       "broken clouds: 51-84%"),
+    (804, "Clouds",       "overcast clouds: 85-100%"),
+    (500, "Rain",         "light rain"),
+    (501, "Rain",         "moderate rain"),
+    (502, "Rain",         "heavy intensity rain"),
+    (300, "Drizzle",      "light intensity drizzle"),
+    (600, "Snow",         "light snow"),
+    (601, "Snow",         "snow"),
+    (701, "Mist",         "mist"),
+    (721, "Haze",         "haze"),
+    (741, "Fog",          "fog"),
+    (200, "Thunderstorm", "thunderstorm with light rain"),
+    (201, "Thunderstorm", "thunderstorm with rain"),
+]
 
-# Open-Meteo free-tier rate limits shared across all gateway containers.
-# Binding constraint is the daily quota (10,000/day).
-OPENMETEO_MAX_CALLS_PER_MIN = int(os.environ.get("OPENMETEO_MAX_CALLS_PER_MIN", "600"))
-NUM_GATEWAY_CONTAINERS       = int(os.environ.get("NUM_GATEWAY_CONTAINERS", "1"))
-
-_min_by_minute = (NUM_GATEWAY_CONTAINERS * 60)      / 600    # per-minute quota
-_min_by_hour   = (NUM_GATEWAY_CONTAINERS * 3600)    / 5000   # per-hour quota
-_min_by_day    = (NUM_GATEWAY_CONTAINERS * 86400)   / 10000  # per-day quota  ← binding
-_min_interval  = max(_min_by_minute, _min_by_hour, _min_by_day)
-
-if POLL_INTERVAL_SECONDS < _min_interval:
-    raise ValueError(
-        f"POLL_INTERVAL_SECONDS={POLL_INTERVAL_SECONDS} would exceed the Open-Meteo rate limit. "
-        f"With {NUM_GATEWAY_CONTAINERS} container(s) the minimum safe interval is "
-        f"{_min_interval:.1f}s (bound by daily quota of 10,000 calls/day)."
-    )
-
-# ── Open-Meteo API ────────────────────────────────────────────────────────────
-API_URL = "https://api.open-meteo.com/v1/forecast"
-API_PARAMS = {
-    "latitude": LATITUDE,
-    "longitude": LONGITUDE,
-    "current": [
-        "temperature_2m",
-        "relative_humidity_2m",
-        "apparent_temperature",
-        "is_day",
-        "precipitation",
-        "rain",
-        "showers",
-        "snowfall",
-        "weather_code",
-        "cloud_cover",
-        "pressure_msl",
-        "surface_pressure",
-        "wind_speed_10m",
-        "wind_direction_10m",
-        "wind_gusts_10m",
-    ],
-}
+# ── Timezone offset table keyed by approximate longitude band ─────────────────
+def _timezone_for(lat: float, lon: float) -> str:
+    """Very rough lon→timezone string (good enough for fake data)."""
+    offsets = [
+        (-180, -157, "America/Honolulu"),
+        (-157, -127, "America/Los_Angeles"),
+        (-127,  -97, "America/Denver"),
+        ( -97,  -67, "America/New_York"),
+        ( -67,  -30, "America/Sao_Paulo"),
+        ( -30,   15, "Europe/London"),
+        (  15,   37, "Europe/Berlin"),
+        (  37,   60, "Asia/Dubai"),
+        (  60,   90, "Asia/Kolkata"),
+        (  90,  120, "Asia/Bangkok"),
+        ( 120,  145, "Asia/Tokyo"),
+        ( 145,  180, "Australia/Sydney"),
+    ]
+    for lo, hi, tz in offsets:
+        if lo <= lon < hi:
+            return tz
+    return "UTC"
 
 
-def fetch_weather() -> dict:
-    response = requests.get(API_URL, params=API_PARAMS, timeout=10)
-    response.raise_for_status()
-    return response.json()
+def _fake_weather(station: dict) -> dict:
+    """Generate a fake OWM One Call 3.0 `current` block + envelope."""
+    now = int(time.time())
+    lat, lon = station["lat"], station["lon"]
+
+    # Base temperature from latitude (rough climate model)
+    base_temp = 25.0 - abs(lat) * 0.55 + random.gauss(0, 4)
+    temp        = round(base_temp, 2)
+    feels_like  = round(temp + random.uniform(-3, 3), 2)
+    dew_point   = round(temp - random.uniform(5, 15), 2)
+
+    condition = random.choice(_WEATHER_CONDITIONS)
+    weather_id, weather_main, weather_desc = condition
+
+    clouds = random.randint(0, 100)
+    is_rainy = weather_main in ("Rain", "Drizzle", "Thunderstorm")
+
+    # Approximate sunrise/sunset: solar noon ≈ lon/15 offset from UTC noon
+    solar_offset = int(lon / 15 * 3600)
+    today_noon   = (now // 86400) * 86400 + 43200  # UTC noon today
+    sunrise = today_noon - 21600 + solar_offset    # ~6 h before noon
+    sunset  = today_noon + 21600 + solar_offset    # ~6 h after noon
+
+    current = {
+        "dt":          now,
+        "sunrise":     sunrise,
+        "sunset":      sunset,
+        "temp":        temp,
+        "feels_like":  feels_like,
+        "pressure":    random.randint(990, 1030),
+        "humidity":    random.randint(20, 95),
+        "dew_point":   dew_point,
+        "uvi":         round(random.uniform(0, 12), 2),
+        "clouds":      clouds,
+        "visibility":  random.randint(1000, 10000),
+        "wind_speed":  round(random.uniform(0, 15), 2),
+        "wind_deg":    random.randint(0, 359),
+        "wind_gust":   round(random.uniform(0, 20), 2),
+        "weather": [
+            {
+                "id":          weather_id,
+                "main":        weather_main,
+                "description": weather_desc,
+                "icon":        "01d",
+            }
+        ],
+    }
+    if is_rainy:
+        current["rain"] = {"1h": round(random.uniform(0.1, 10.0), 2)}
+
+    return {
+        "lat":      lat,
+        "lon":      lon,
+        "timezone": _timezone_for(lat, lon),
+        "current":  current,
+    }
 
 
-def build_event(raw: dict) -> dict:
-    """Enrich the raw API response with device metadata."""
-    raw["iot_device_id"] = DEVICE_ID
-    raw["ingestion_time"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    return raw
+def build_event(raw: dict, station: dict) -> dict:
+    """Wrap the fake OWM payload with station/device metadata (identical schema)."""
+    current = raw.get("current", {})
+    return {
+        "iot_device_id":  station["id"],
+        "ingestion_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "data":           current,
+        "location": {
+            "lat":      raw.get("lat"),
+            "lon":      raw.get("lon"),
+            "timezone": raw.get("timezone"),
+        },
+    }
 
 
 def delivery_report(err, msg):
     if err:
         logger.error("Delivery failed for key %s: %s", msg.key(), err)
     else:
-        logger.info(
+        logger.debug(
             "Delivered to %s [partition %d] offset %d",
             msg.topic(), msg.partition(), msg.offset(),
         )
 
 
 def main():
-    producer = Producer({"bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS})
+    producer = Producer({"bootstrap.servers": config.KAFKA_BOOTSTRAP_SERVERS})
+    # deadline = time.monotonic() + config.KILL_AFTER_SECONDS
 
     logger.info(
-        "IoT Gateway started | device=%s lat=%.4f lon=%.4f topic=%s poll=%ds",
-        DEVICE_ID, LATITUDE, LONGITUDE, KAFKA_TOPIC, POLL_INTERVAL_SECONDS,
+        "IoT Gateway started (faker mode) | stations=%d topic=%s ", \
+        # "poll=%ds kill_after=%ds",
+        len(config.STATIONS), config.KAFKA_TOPIC
+        # ,
+        # config.POLL_INTERVAL_SECONDS, config.KILL_AFTER_SECONDS,
     )
 
+    # ── Continuous loop: 1 station/second, 60 stations → 1 full round/minute ──
+    round_num = 0
     while True:
-        try:
-            raw = fetch_weather()
-            event = build_event(raw)
-            payload = json.dumps(event).encode("utf-8")
+        # if time.monotonic() >= deadline:
+        #     logger.info(
+        #         "Kill timer expired after %ds. Flushing and shutting down.",
+        #         config.KILL_AFTER_SECONDS,
+        #     )
+        #     producer.flush()
+        #     sys.exit(0)
 
-            producer.produce(
-                topic=KAFKA_TOPIC,
-                key=DEVICE_ID.encode("utf-8"),
-                value=payload,
-                callback=delivery_report,
-            )
-            producer.poll(0)
-            logger.info("Published event for device=%s", DEVICE_ID)
+        round_num += 1
+        for station in config.STATIONS:
+            # if time.monotonic() >= deadline:
+            #     break
+            partition = (station["id"] - 1) % config.KAFKA_NUM_PARTITIONS
+            try:
+                raw   = _fake_weather(station)
+                event = build_event(raw, station)
+                producer.produce(
+                    topic=config.KAFKA_TOPIC,
+                    partition=partition,
+                    key=str(station["id"]).encode("utf-8"),
+                    value=json.dumps(event).encode("utf-8"),
+                    callback=delivery_report,
+                )
+                producer.poll(0)
+                logger.info(
+                    "Published | round=%d device=%d partition=%d temp=%.1f weather=%s",
+                    round_num, station["id"], partition,
+                    event["data"].get("temp"), event["data"]["weather"][0]["main"],
+                )
+            except Exception as exc:
+                logger.error("Error for device %d: %s", station["id"], exc)
 
-        except requests.RequestException as exc:
-            logger.error("API request failed: %s", exc)
-        except Exception as exc:
-            logger.error("Unexpected error: %s", exc)
+            time.sleep(1)  # 1 station/second → 1 full round per minute
 
-        time.sleep(POLL_INTERVAL_SECONDS)
+        logger.info("Round %d complete (%d stations).", round_num, len(config.STATIONS))
 
 
 if __name__ == "__main__":
     main()
+

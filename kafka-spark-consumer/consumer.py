@@ -59,7 +59,7 @@ raw_df = (
 
 # ── Write to MinIO /raw (partitioned by date + device) ───────────────────────
 # Output layout:
-#   s3a://raw/ingestion_date=2026-04-30/iot_device_id=device_1/<micro-batch>.json
+#   s3a://raw/ingestion_date=2026-04-30/iot_device_id=1/<micro-batch>.json
 query = (
     raw_df.writeStream
     .format("json")
@@ -67,7 +67,7 @@ query = (
     .option("checkpointLocation", f"{RAW_BUCKET}/_checkpoints/kafka-raw-consumer")
     .partitionBy("ingestion_date", "iot_device_id")
     .outputMode("append")
-    .trigger(processingTime=f"{POLL_INTERVAL_SECONDS} seconds")
+    .trigger(processingTime="0 seconds")
     .start()
 )
 

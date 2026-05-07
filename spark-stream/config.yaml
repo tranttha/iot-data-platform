@@ -1,0 +1,622 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# spark-stream static configuration
+#
+# Rule: anything that changes between environments (credentials, hostnames,
+# secrets) lives in .env and is injected via docker-compose.
+# Everything structural (table names, paths, field lists, SCD keys, timeouts)
+# lives here so it can be version-controlled and reviewed without touching code.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Defaults (overridden by environment variables at runtime) ─────────────────
+defaults:
+  poll_interval_seconds: 18      # must match producer; controls sleep between runs
+
+# ── MinIO bucket layout ───────────────────────────────────────────────────────
+# Paths are s3a:// URIs; credentials come from env vars.
+storage:
+  raw_path:        "s3a://raw/"
+  staging_path:    "s3a://staging/"
+  warehouse_path:  "s3a://warehouse/"
+  checkpoints:
+    staging:       "s3a://staging/_checkpoints/spark-stream-staging"
+
+# ── Iceberg catalog ───────────────────────────────────────────────────────────
+# Hadoop catalog: catalog root = warehouse_path. No metastore needed.
+# Both spark-stream and Trino point to the same root.
+iceberg:
+  catalog_name:   "lakehouse"
+  catalog_type:   "hadoop"      # file-based; root resolved from warehouse_path at runtime
+
+# ── Staging layer ─────────────────────────────────────────────────────────────
+staging:
+  table: "lakehouse.staging.events"
+  partition_by: "days(event_time)"
+
+  # Deduplication: rows with the same (event_time, iot_device_id) are duplicates.
+  dedup_keys:
+    - event_time
+    - iot_device_id
+
+  # Source JSON fields to extract from the raw file (top-level + current.* flattened).
+  # These become the columns of the staging Iceberg table.
+  # Source JSON layout (inside raw_json string):
+  #   iot_device_id (int), ingestion_time (ISO string),
+  #   data.{dt, sunrise, sunset, temp, feels_like, pressure, humidity,
+  #         dew_point, uvi, clouds, visibility, wind_speed, wind_deg,
+  #         wind_gust, weather[0].{id,main,description}, rain.1h (optional)}
+  #   location.{lat, lon, timezone}
+  fields:
+    # ── Device metadata ───────────────────────────────────────────────────────
+    - name: event_time
+      source: "data.dt"           # epoch seconds → from_unixtime cast
+      type: timestamp
+    - name: ingestion_time
+      source: ingestion_time
+      type: timestamp
+    - name: iot_device_id
+      source: iot_device_id
+      type: integer
+    - name: latitude
+      source: "location.lat"
+      type: double
+    - name: longitude
+      source: "location.lon"
+      type: double
+    - name: timezone
+      source: "location.timezone"
+      type: string
+    # ── Daily sun events ──────────────────────────────────────────────────────
+    - name: sunrise
+      source: "data.sunrise"      # epoch seconds → from_unixtime cast
+      type: timestamp
+    - name: sunset
+      source: "data.sunset"       # epoch seconds → from_unixtime cast
+      type: timestamp
+    # ── Weather measurements ──────────────────────────────────────────────────
+    - name: temp
+      source: "data.temp"
+      type: double
+    - name: feels_like
+      source: "data.feels_like"
+      type: double
+    - name: pressure
+      source: "data.pressure"
+      type: integer
+    - name: humidity
+      source: "data.humidity"
+      type: integer
+    - name: dew_point
+      source: "data.dew_point"
+      type: double
+    - name: uvi
+      source: "data.uvi"
+      type: double
+    - name: clouds
+      source: "data.clouds"
+      type: integer
+    - name: visibility
+      source: "data.visibility"
+      type: integer
+    - name: wind_speed
+      source: "data.wind_speed"
+      type: double
+    - name: wind_deg
+      source: "data.wind_deg"
+      type: integer
+    - name: wind_gust
+      source: "data.wind_gust"
+      type: double
+    # ── Weather condition ─────────────────────────────────────────────────────
+    - name: weather_id
+      source: "data.weather[0].id"
+      type: integer
+    - name: weather_main
+      source: "data.weather[0].main"
+      type: string
+    - name: weather_description
+      source: "data.weather[0].description"
+      type: string
+    - name: rain_1h
+      source: "data.rain.1h"      # nullable — absent when no rain
+      type: double
+
+# ── Warehouse layer ───────────────────────────────────────────────────────────
+warehouse:
+
+  dim_date:
+    table: "lakehouse.warehouse.dim_date"
+    # Natural key = surrogate key (dates are immutable, no SCD needed).
+    natural_key: date_key          # integer YYYYMMDD
+    # Columns derived from event_time at write time — no source field mapping needed.
+
+  dim_iot_device:
+    table: "lakehouse.warehouse.dim_iot_device"
+    scd_type: 2
+    natural_key: iot_device_id
+    # SCD Type 2 opens a new version when any tracked_attribute changes.
+    tracked_attributes:
+      - latitude
+      - longitude
+      - timezone
+    surrogate_key: device_sk       # MD5(iot_device_id || effective_start)
+    effective_start_col: effective_start
+    effective_end_col:   effective_end    # NULL = currently active row
+    is_current_col:      is_current
+
+  dim_country:
+    table: "lakehouse.warehouse.dim_country"
+    scd_type: 2
+    # Country is derived from (latitude, longitude) via bounding-box lookup,
+    # not from a raw source field. Natural key scoped per device.
+    natural_key:
+      - iot_device_id
+      - country_code
+    tracked_attributes:
+      - country_code
+      - country_name
+      - city
+    surrogate_key: country_sk      # MD5(iot_device_id || country_code || effective_start)
+    effective_start_col: effective_start
+    effective_end_col:   effective_end
+    is_current_col:      is_current
+
+  fact_measurements:
+    table: "lakehouse.warehouse.fact_measurements"
+    surrogate_key: fact_sk         # UUID per row
+    # Foreign keys resolved at write time from dimension current rows.
+    foreign_keys:
+      date_key:    dim_date.date_key
+      device_sk:   dim_iot_device.device_sk   # WHERE is_current = true
+      country_sk:  dim_country.country_sk      # WHERE is_current = true
+    # Denormalized readable columns — carried at write time, no join needed in dashboards.
+    denormalized_fields:
+      - iot_device_id   # from staging directly
+      - country_code    # from dim_country current row at write time
+    # Measurement columns copied directly from staging (all weather fields).
+    measurement_fields:
+      - sunrise
+      - sunset
+      - temp
+      - feels_like
+      - pressure
+      - humidity
+      - dew_point
+      - uvi
+      - clouds
+      - visibility
+      - wind_speed
+      - wind_deg
+      - wind_gust
+      - rain_1h
+    # Partitioning + sort: Trino prunes to day-level files; min/max skipping within file.
+    partition_by: "days(event_time)"
+    sort_order:
+      - event_time
+      - iot_device_id
+    # Iceberg table properties set at CREATE TABLE time.
+    table_properties:
+      write.parquet.compression-codec: snappy          # faster decompress than gzip
+      write.metadata.delete-after-commit.enabled: "true"
+      write.metadata.previous-versions-max: "10"       # cap metadata file growth
+      read.split.target-size: "134217728"              # 128 MB Trino split
+
+  # Pre-aggregated hourly rollup — powers overview dashboard panels without scanning fact.
+  fact_hourly_agg:
+    table: "lakehouse.warehouse.fact_hourly_agg"
+    # Natural key: one row per (hour_bucket, iot_device_id).
+    natural_key:
+      - hour_bucket
+      - iot_device_id
+    # Denormalized for join-free dashboards.
+    denormalized_fields:
+      - country_code
+    # Aggregated metric columns (avg over the hour window).
+    agg_fields:
+      - avg_temp
+      - avg_feels_like
+      - avg_humidity
+      - avg_pressure
+      - avg_wind_speed
+      - avg_uvi
+      - avg_clouds
+      - avg_visibility
+      - avg_rain_1h        # nullable — null when no rain events in hour
+    partition_by: "days(hour_bucket)"
+    sort_order:
+      - hour_bucket
+      - iot_device_id
+    table_properties:
+      write.parquet.compression-codec: snappy
+      write.metadata.delete-after-commit.enabled: "true"
+      write.metadata.previous-versions-max: "10"
+
+
+# ── Country bounding-box lookup ───────────────────────────────────────────────
+# Used by dim_country to map (lat, lon) → (country_code, country_name, city).
+# Evaluated top-to-bottom; first match wins.
+# Bounding boxes sourced from OpenStreetMap Nominatim (OSM relation bounds).
+# Order: smaller/overlapping countries before larger ones.
+# Stations covered: IDs 1-60 from config.yaml.
+country_lookup:
+
+  # ── North America ────────────────────────────────────────────────────────────
+  # Canada: stations 58 (Toronto), 59 (Vancouver), 60 (Montreal)
+  - lat_min: 41.68
+    lat_max: 83.34
+    lon_min: -141.00
+    lon_max: -52.32
+    country_code: CA
+    country_name: Canada
+    city: Toronto
+
+  # Mexico: station 57 (Mexico City)
+  - lat_min: 14.38
+    lat_max: 32.72
+    lon_min: -118.60
+    lon_max: -86.49
+    country_code: MX
+    country_name: Mexico
+    city: Mexico City
+
+  # Colombia: station 55 (Bogotá)
+  - lat_min: -4.23
+    lat_max: 16.05
+    lon_min: -82.12
+    lon_max: -66.85
+    country_code: CO
+    country_name: Colombia
+    city: Bogota
+
+  # United States: stations 1-10
+  - lat_min: 24.00
+    lat_max: 49.50
+    lon_min: -125.00
+    lon_max: -66.90
+    country_code: US
+    country_name: United States
+    city: New York
+
+  # ── South America ─────────────────────────────────────────────────────────────
+  # Chile: station 56 (Santiago)
+  - lat_min: -56.73
+    lat_max: -17.50
+    lon_min: -109.68
+    lon_max: -66.08
+    country_code: CL
+    country_name: Chile
+    city: Santiago
+
+  # Peru: station 54 (Lima)
+  - lat_min: -20.20
+    lat_max: -0.04
+    lon_min: -84.64
+    lon_max: -68.65
+    country_code: PE
+    country_name: Peru
+    city: Lima
+
+  # Argentina: station 52 (Buenos Aires)
+  - lat_min: -55.19
+    lat_max: -21.78
+    lon_min: -73.56
+    lon_max: -53.64
+    country_code: AR
+    country_name: Argentina
+    city: Buenos Aires
+
+  # Brazil: stations 51 (São Paulo), 53 (Rio de Janeiro)
+  - lat_min: -33.87
+    lat_max: 5.27
+    lon_min: -73.98
+    lon_max: -28.63
+    country_code: BR
+    country_name: Brazil
+    city: Sao Paulo
+
+  # ── Europe ────────────────────────────────────────────────────────────────────
+  # United Kingdom: station 11 (London)
+  - lat_min: 49.67
+    lat_max: 61.06
+    lon_min: -14.02
+    lon_max: 2.09
+    country_code: GB
+    country_name: United Kingdom
+    city: London
+
+  # Netherlands: station 16 (Amsterdam)
+  - lat_min: 50.75
+    lat_max: 53.74
+    lon_min: 3.36
+    lon_max: 7.23
+    country_code: NL
+    country_name: Netherlands
+    city: Amsterdam
+
+  # Austria: station 17 (Vienna)
+  - lat_min: 46.37
+    lat_max: 49.02
+    lon_min: 9.53
+    lon_max: 17.16
+    country_code: AT
+    country_name: Austria
+    city: Vienna
+
+  # Germany: station 13 (Berlin)
+  - lat_min: 47.27
+    lat_max: 55.10
+    lon_min: 5.87
+    lon_max: 15.04
+    country_code: DE
+    country_name: Germany
+    city: Berlin
+
+  # Italy: station 15 (Rome)
+  - lat_min: 35.29
+    lat_max: 47.09
+    lon_min: 6.63
+    lon_max: 18.78
+    country_code: IT
+    country_name: Italy
+    city: Rome
+
+  # Spain: station 14 (Madrid)
+  - lat_min: 27.43
+    lat_max: 43.99
+    lon_min: -18.39
+    lon_max: 4.59
+    country_code: ES
+    country_name: Spain
+    city: Madrid
+
+  # France: station 12 (Paris)
+  - lat_min: 41.30
+    lat_max: 51.31
+    lon_min: -5.20
+    lon_max: 9.56
+    country_code: FR
+    country_name: France
+    city: Paris
+
+  # Poland: station 18 (Warsaw)
+  - lat_min: 49.00
+    lat_max: 55.04
+    lon_min: 14.07
+    lon_max: 24.15
+    country_code: PL
+    country_name: Poland
+    city: Warsaw
+
+  # Sweden: station 19 (Stockholm)
+  - lat_min: 55.14
+    lat_max: 69.06
+    lon_min: 10.59
+    lon_max: 24.18
+    country_code: SE
+    country_name: Sweden
+    city: Stockholm
+
+  # Norway: station 20 (Oslo)
+  - lat_min: 57.80
+    lat_max: 71.30
+    lon_min: 4.09
+    lon_max: 31.29
+    country_code: 'NO'
+    country_name: Norway
+    city: Oslo
+
+  # Morocco: station 45 (Casablanca)
+  - lat_min: 20.67
+    lat_max: 36.00
+    lon_min: -17.32
+    lon_max: -0.99
+    country_code: MA
+    country_name: Morocco
+    city: Casablanca
+
+  # ── Africa ────────────────────────────────────────────────────────────────────
+  # Egypt: station 41 (Cairo)
+  - lat_min: 21.99
+    lat_max: 31.83
+    lon_min: 24.65
+    lon_max: 37.12
+    country_code: EG
+    country_name: Egypt
+    city: Cairo
+
+  # Nigeria: station 42 (Lagos)
+  - lat_min: 4.07
+    lat_max: 13.89
+    lon_min: 2.68
+    lon_max: 14.68
+    country_code: NG
+    country_name: Nigeria
+    city: Lagos
+
+  # Kenya: station 43 (Nairobi)
+  - lat_min: -4.90
+    lat_max: 4.62
+    lon_min: 33.91
+    lon_max: 41.91
+    country_code: KE
+    country_name: Kenya
+    city: Nairobi
+
+  # South Africa: station 44 (Johannesburg)
+  - lat_min: -47.18
+    lat_max: -22.13
+    lon_min: 16.33
+    lon_max: 38.29
+    country_code: ZA
+    country_name: South Africa
+    city: Johannesburg
+
+  # ── Middle East ───────────────────────────────────────────────────────────────
+  # UAE: station 46 (Dubai)
+  - lat_min: 22.63
+    lat_max: 26.15
+    lon_min: 51.42
+    lon_max: 56.60
+    country_code: AE
+    country_name: United Arab Emirates
+    city: Dubai
+
+  # Saudi Arabia: station 47 (Riyadh)
+  - lat_min: 16.29
+    lat_max: 32.15
+    lon_min: 34.46
+    lon_max: 55.67
+    country_code: SA
+    country_name: Saudi Arabia
+    city: Riyadh
+
+  # Iran: station 48 (Tehran)
+  - lat_min: 24.84
+    lat_max: 39.78
+    lon_min: 44.03
+    lon_max: 63.33
+    country_code: IR
+    country_name: Iran
+    city: Tehran
+
+  # Turkey: station 49 (Istanbul)
+  - lat_min: 35.81
+    lat_max: 42.30
+    lon_min: 25.57
+    lon_max: 44.82
+    country_code: TR
+    country_name: Turkey
+    city: Istanbul
+
+  # Russia: station 50 (Moscow)
+  - lat_min: 41.19
+    lat_max: 82.06
+    lon_min: 19.64
+    lon_max: 180.00
+    country_code: RU
+    country_name: Russia
+    city: Moscow
+
+  # ── Asia ──────────────────────────────────────────────────────────────────────
+  # India: stations 25 (Mumbai), 26 (Delhi), 27 (Bangalore)
+  - lat_min: 6.55
+    lat_max: 35.67
+    lon_min: 67.95
+    lon_max: 97.40
+    country_code: IN
+    country_name: India
+    city: Mumbai
+
+  # Indonesia: station 28 (Jakarta)
+  - lat_min: -11.21
+    lat_max: 6.27
+    lon_min: 94.77
+    lon_max: 141.02
+    country_code: ID
+    country_name: Indonesia
+    city: Jakarta
+
+  # Thailand: station 29 (Bangkok)
+  - lat_min: 5.61
+    lat_max: 20.46
+    lon_min: 97.34
+    lon_max: 105.64
+    country_code: TH
+    country_name: Thailand
+    city: Bangkok
+
+  # Singapore: station 30
+  - lat_min: 1.13
+    lat_max: 1.51
+    lon_min: 103.57
+    lon_max: 104.57
+    country_code: SG
+    country_name: Singapore
+    city: Singapore
+
+  # Malaysia: station 31 (Kuala Lumpur)
+  - lat_min: 0.85
+    lat_max: 8.38
+    lon_min: 98.74
+    lon_max: 119.47
+    country_code: MY
+    country_name: Malaysia
+    city: Kuala Lumpur
+
+  # Vietnam: station 32 (Ho Chi Minh City)
+  - lat_min: 7.69
+    lat_max: 23.39
+    lon_min: 102.14
+    lon_max: 114.86
+    country_code: VN
+    country_name: Vietnam
+    city: Ho Chi Minh City
+
+  # Hong Kong: station 33
+  - lat_min: 22.14
+    lat_max: 22.57
+    lon_min: 113.82
+    lon_max: 114.50
+    country_code: HK
+    country_name: Hong Kong
+    city: Hong Kong
+
+  # Taiwan: station 34 (Taipei)
+  - lat_min: 10.33
+    lat_max: 26.44
+    lon_min: 114.29
+    lon_max: 122.33
+    country_code: TW
+    country_name: Taiwan
+    city: Taipei
+
+  # South Korea: station 24 (Seoul)
+  - lat_min: 32.91
+    lat_max: 38.62
+    lon_min: 124.37
+    lon_max: 132.12
+    country_code: KR
+    country_name: South Korea
+    city: Seoul
+
+  # Japan: stations 21 (Tokyo), 35 (Osaka)
+  - lat_min: 20.21
+    lat_max: 45.71
+    lon_min: 122.71
+    lon_max: 154.21
+    country_code: JP
+    country_name: Japan
+    city: Tokyo
+
+  # China: stations 22 (Beijing), 23 (Shanghai)
+  - lat_min: 8.67
+    lat_max: 53.56
+    lon_min: 73.50
+    lon_max: 134.78
+    country_code: CN
+    country_name: China
+    city: Beijing
+
+  # ── Oceania ───────────────────────────────────────────────────────────────────
+  # New Zealand: station 40 (Auckland)
+  - lat_min: -47.29
+    lat_max: -34.00
+    lon_min: 166.43
+    lon_max: 178.55
+    country_code: NZ
+    country_name: New Zealand
+    city: Auckland
+
+  # Australia: stations 36 (Sydney), 37 (Melbourne), 38 (Brisbane), 39 (Perth)
+  - lat_min: -43.74
+    lat_max: -10.07
+    lon_min: 113.16
+    lon_max: 153.64
+    country_code: AU
+    country_name: Australia
+    city: Sydney
+
+  # ── Fallback ──────────────────────────────────────────────────────────────────
+  - fallback: true
+    country_code: XX
+    country_name: Unknown
+    city: Unknown

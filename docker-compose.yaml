@@ -22,7 +22,7 @@ services:
     image: confluentinc/cp-zookeeper:7.4.0
     container_name: zookeeper
 
-    profiles: [ingest, full]
+    profiles: [iot, ingest, full]
 
     environment:
       ZOOKEEPER_CLIENT_PORT: ${ZOOKEEPER_CLIENT_PORT}
@@ -39,7 +39,7 @@ services:
     image: confluentinc/cp-kafka:7.4.0
     container_name: kafka
 
-    profiles: [ingest, full]
+    profiles: [iot, ingest, full]
 
     depends_on:
       - zookeeper
@@ -56,6 +56,34 @@ services:
       KAFKA_ADVERTISED_LISTENERS: ${KAFKA_ADVERTISED_LISTENERS}
 
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: ${KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR}
+      KAFKA_NUM_PARTITIONS: ${KAFKA_NUM_PARTITIONS}
+
+  ####################################################
+  # KAFKA TOPIC SETUP
+  ####################################################
+
+  # kafka-setup:
+  #   image: confluentinc/cp-kafka:7.4.0
+  #   container_name: kafka-setup
+
+  #   profiles: [iot, ingest, full]
+
+  #   depends_on:
+  #     - kafka
+
+  #   entrypoint: |
+  #     /bin/sh -c "
+  #     echo 'Waiting for Kafka...';
+  #     until kafka-topics --bootstrap-server kafka:9092 --list > /dev/null 2>&1; do sleep 2; done;
+  #     echo 'Deleting topic if it exists...';
+  #     kafka-topics --bootstrap-server kafka:9092 --delete --topic ${KAFKA_TOPIC} 2>/dev/null || true;
+  #     echo 'Waiting for deletion to complete...';
+  #     while kafka-topics --bootstrap-server kafka:9092 --describe --topic ${KAFKA_TOPIC} > /dev/null 2>&1; do echo 'Still deleting...'; sleep 2; done;
+  #     echo 'Creating topic...';
+  #     kafka-topics --bootstrap-server kafka:9092 --create --topic ${KAFKA_TOPIC} --partitions ${KAFKA_NUM_PARTITIONS} --replication-factor 1;
+  #     echo 'Topic setup complete:';
+  #     kafka-topics --bootstrap-server kafka:9092 --describe --topic ${KAFKA_TOPIC};
+  #     "
 
   ####################################################
   # MINIO
@@ -104,52 +132,27 @@ services:
       "
 
   ####################################################
-  # IOT GATEWAY
+  # IOT GATEWAY — 1 container, 60 stations, 600 s micro-batch
+  # Cycles through all 60 stations at 1 call/second per batch,
+  # then sleeps to the next wall-clock 10-minute boundary.
+  # Station definitions (device_id, city, lat, lon) live in config.yaml.
   ####################################################
 
-  iot-gateway-1:
+  iot-gateway:
     build:
       context: ./iot-gateway
-
-    container_name: iot-gateway-1
-
-    profiles: [ingest, full]
-
+    container_name: iot-gateway
+    profiles: [iot, ingest, full]
     depends_on:
+      # - kafka-setup
       - kafka
 
     environment:
-      DEVICE_ID: ${DEVICE_1_ID}
-      LATITUDE: ${DEVICE_1_LATITUDE}
-      LONGITUDE: ${DEVICE_1_LONGITUDE}
-
       KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
-
-      OPENMETEO_MAX_CALLS_PER_MIN: ${OPENMETEO_MAX_CALLS_PER_MIN}
-      NUM_GATEWAY_CONTAINERS: ${NUM_GATEWAY_CONTAINERS}
+      KAFKA_NUM_PARTITIONS: ${KAFKA_NUM_PARTITIONS}
+      OWM_API_KEY: ${OWM_API_KEY}
       POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS}
-
-  iot-gateway-2:
-    build:
-      context: ./iot-gateway
-
-    container_name: iot-gateway-2
-
-    profiles: [ingest, processing, full]
-
-    depends_on:
-      - kafka
-
-    environment:
-      DEVICE_ID: ${DEVICE_2_ID}
-      LATITUDE: ${DEVICE_2_LATITUDE}
-      LONGITUDE: ${DEVICE_2_LONGITUDE}
-
-      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
-
-      OPENMETEO_MAX_CALLS_PER_MIN: ${OPENMETEO_MAX_CALLS_PER_MIN}
-      NUM_GATEWAY_CONTAINERS: ${NUM_GATEWAY_CONTAINERS}
-      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS}
+      KILL_AFTER_SECONDS: ${KILL_AFTER_SECONDS}
 
   ####################################################
   # SPARK CLUSTER (INGESTION)
@@ -165,13 +168,16 @@ services:
       SPARK_MODE: master
       SPARK_MASTER_PORT: 7077
       SPARK_MASTER_WEBUI_PORT: 8081
+      SPARK_DAEMON_JAVA_OPTS: "-Dspark.ui.reverseProxy=true -Dspark.ui.reverseProxyUrl=http://localhost:8081"
 
     ports:
       - "7077:7077"
       - "8081:8081"
 
   spark-worker:
-    image: bitnamilegacy/spark:3.5
+    build:
+      context: ./spark-worker
+      dockerfile: Dockerfile.worker
     container_name: spark-worker
 
     profiles: [ingest, processing, full]
@@ -184,6 +190,8 @@ services:
       SPARK_MASTER_URL: ${SPARK_MASTER_URL}
       SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY}
       SPARK_WORKER_CORES: ${SPARK_WORKER_CORES}
+      SPARK_WORKER_WEBUI_PORT: 8082
+      SPARK_DAEMON_JAVA_OPTS: "-Dspark.ui.reverseProxy=true -Dspark.ui.reverseProxyUrl=http://localhost:8081"
 
     ports:
       - "8082:8082"
@@ -217,6 +225,10 @@ services:
 
       POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS}
 
+      CONSUMER_TOTAL_EXECUTOR_CORES: ${CONSUMER_TOTAL_EXECUTOR_CORES}
+      CONSUMER_EXECUTOR_MEMORY: ${CONSUMER_EXECUTOR_MEMORY}
+      CONSUMER_DRIVER_MEMORY: ${CONSUMER_DRIVER_MEMORY}
+
     volumes:
       - ivy2_cache:/root/.ivy2 # Cache for Spark dependencies
     ports:
@@ -239,9 +251,20 @@ services:
       - minio
 
     environment:
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
-      AWS_REGION: ${AWS_REGION}
+      SPARK_MASTER_URL:              ${SPARK_MASTER_URL}
+      MINIO_ENDPOINT:                ${MINIO_ENDPOINT}
+      MINIO_ACCESS_KEY:              ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY:              ${MINIO_SECRET_KEY}
+      POLL_INTERVAL_SECONDS:         ${POLL_INTERVAL_SECONDS}
+      STREAM_TOTAL_EXECUTOR_CORES:   ${STREAM_TOTAL_EXECUTOR_CORES}
+      STREAM_EXECUTOR_MEMORY:        ${STREAM_EXECUTOR_MEMORY}
+      STREAM_DRIVER_MEMORY:          ${STREAM_DRIVER_MEMORY}
+
+    volumes:
+      - ivy2_cache:/root/.ivy2   # cache Iceberg/Hadoop JARs across restarts
+
+    ports:
+      - "4041:4040"             # Spark driver UI (4040 is taken by consumer)
 
   ####################################################
   # TRINO
@@ -261,6 +284,7 @@ services:
 
     volumes:
       - ./trino/catalog:/etc/trino/catalog
+      - ./trino/config.properties:/etc/trino/config.properties
 
   ####################################################
   # GRAFANA
