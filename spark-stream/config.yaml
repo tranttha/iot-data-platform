@@ -9,7 +9,7 @@
 
 # ── Defaults (overridden by environment variables at runtime) ─────────────────
 defaults:
-  poll_interval_seconds: 18      # must match producer; controls sleep between runs
+  poll_interval_seconds: 60      # must match producer; controls sleep between runs
 
 # ── MinIO bucket layout ───────────────────────────────────────────────────────
 # Paths are s3a:// URIs; credentials come from env vars.

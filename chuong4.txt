@@ -5,357 +5,275 @@ CHƯƠNG 4: TRIỂN KHAI CHƯƠNG TRÌNH
 ═══════════════════════════════════════════════════════════════
 
 Toàn bộ dự án được tổ chức theo mô hình monorepo, mỗi thư mục con tương ứng với một thành phần
-độc lập trong kiến trúc pipeline đã được trình bày ở Chương 3. Cấu trúc thư mục như sau:
+độc lập trong kiến trúc pipeline:
 
 iot-data-platform/
-├── docker-compose.yaml          # Định nghĩa toàn bộ stack, chia profile theo tầng
-├── .env                         # Biến môi trường thực tế (không commit lên git)
-├── .env.example                 # Bản mẫu có chú thích, dùng để onboarding
-├── README.md                    # Tài liệu dự án, sơ đồ kiến trúc, hướng dẫn chạy
-│
-├── iot-gateway/                 # (4.1.1) Producer giả lập thiết bị IoT
-│   ├── Dockerfile
-│   ├── producer.py
-│   └── requirement.txt
-│
-├── kafka-spark-consumer/        # (4.1.2) Job Spark Structured Streaming: Kafka → MinIO /raw
-│   ├── Dockerfile
-│   ├── consumer.py
-│   └── requirement.txt
-│
-├── spark-stream/                # (4.1.3) Job Spark xử lý dữ liệu: /raw → /warehouse
-│
-├── trino/                       # (4.1.5) Cấu hình Trino query engine
-│   ├── config.properties
-│   └── catalog/
-│       └── iceberg.properties
-│
-├── grafana/                     # (4.1.6) Cấu hình Grafana provisioning
-│   └── provisioning/
-│
-└── minio-data/                  # (4.1.4) Bind-mount volume cho MinIO, tạo tự động khi chạy
+├── docker-compose.yaml          # Điều phối toàn bộ stack, chia profile theo tầng
+├── .env                         # Biến môi trường (credentials, resource limits)
+├── iot-gateway/                 # Producer giả lập dữ liệu IoT
+├── kafka-spark-consumer/        # Spark job: Kafka → MinIO /raw
+├── spark-stream/                # Spark job: /raw → Iceberg warehouse
+├── trino/                       # Cấu hình Trino query engine
+├── grafana/                     # Cấu hình Grafana provisioning
+└── minio-data/                  # Bind-mount volume lưu trữ MinIO
+
+Stack được chia thành 4 profile docker-compose:
+  - ingest:     Kafka + IoT Gateway + kafka-spark-consumer → ghi dữ liệu thô vào MinIO
+  - processing: spark-stream → đọc /raw, xử lý, ghi vào Iceberg warehouse
+  - serve:      Trino + Grafana → truy vấn và trực quan hóa
+  - full:       Toàn bộ pipeline end-to-end
+
+Spark standalone cluster (1 master + 1 worker) được chia sẻ giữa hai profile ingest và
+processing. Worker được cấp 9 cores và 5 GB RAM: kafka-spark-consumer sử dụng 3 cores,
+spark-stream sử dụng 6 cores, đảm bảo cả hai job chạy song song không tranh chấp tài nguyên.
 
 
 ───────────────────────────────────────────────────────────────
-4.1.1. IOT GATEWAY VÀ PRODUCER (iot-gateway/)
+4.2. IOT GATEWAY — PRODUCER GIẢ LẬP (iot-gateway/)
 ───────────────────────────────────────────────────────────────
 
-Thư mục iot-gateway/ chứa thành phần đầu vào của pipeline — một producer Python giả lập
-dữ liệu từ thiết bị IoT bằng cách gọi API thời tiết thực từ Open-Meteo, sau đó đẩy dữ liệu
-vào Kafka topic.
+Thành phần này đóng vai trò nguồn dữ liệu cho toàn bộ pipeline. Thay vì gọi API thực của
+OpenWeatherMap (bị giới hạn 1.000 calls/ngày ở free tier, tối đa cập nhật 10 phút/lần), hệ
+thống triển khai một bộ sinh dữ liệu giả lập (data simulator) có schema hoàn toàn tương đồng
+với OpenWeatherMap One Call 3.0 API, nhưng tăng tần suất sinh bản ghi tùy ý để kiểm thử
+thông lượng cao.
 
-── Thư viện sử dụng ──────────────────────────────────────────
+── Schema payload ────────────────────────────────────────────
 
-  - requests (2.32.3): Gọi HTTP REST API tới Open-Meteo, xử lý timeout và raise lỗi HTTP.
-  - confluent-kafka (2.6.1): Client Kafka hiệu năng cao (binding tới librdkafka C), dùng để
-    tạo Producer và gửi message bất đồng bộ với delivery callback.
-
-── Luồng hoạt động của producer.py ──────────────────────────
-
-  Bước 1 — Khởi động & kiểm tra rate limit:
-    Khi container khởi động, producer kiểm tra ngay POLL_INTERVAL_SECONDS có đảm bảo tốc
-    độ gọi API không vượt quota free-tier của Open-Meteo (10.000 calls/ngày, 5.000/giờ,
-    600/phút). Ràng buộc lớn nhất là hạn mức ngày:
-
-        min_interval = max(
-            NUM_GATEWAY_CONTAINERS * 60   / 600,    # per-minute → 0.2s
-            NUM_GATEWAY_CONTAINERS * 3600 / 5000,   # per-hour   → 1.4s
-            NUM_GATEWAY_CONTAINERS * 86400 / 10000  # per-day    → 17.3s  ← binding
-        )
-
-    Với 2 container, khoảng cách an toàn tối thiểu là 17.3s. Giá trị mặc định được đặt
-    là 18s để có biên an toàn. Nếu người vận hành đặt POLL_INTERVAL_SECONDS thấp hơn
-    ngưỡng này, producer sẽ raise ValueError và từ chối khởi động — ngăn việc vô tình
-    vượt quota.
-
-  Bước 2 — Vòng lặp thu thập và gửi dữ liệu:
-    Trong vòng lặp vô hạn, producer thực hiện:
-      a) Gọi Open-Meteo API với tọa độ lat/lon của thiết bị, lấy 15 chỉ số thời tiết
-         (nhiệt độ, độ ẩm, tốc độ gió, lượng mưa, áp suất, v.v.).
-      b) Gắn metadata vào payload thông qua hàm build_event():
-           - iot_device_id: định danh thiết bị (ví dụ "device_1")
-           - ingestion_time: timestamp UTC lúc thu thập (ISO-8601)
-      c) Serialize payload thành JSON bytes.
-      d) Gọi producer.produce() với key=DEVICE_ID:
-           - Key là DEVICE_ID (bytes): Kafka hash key này sang partition cố định.
-             → Đảm bảo mọi message từ cùng một thiết bị luôn vào cùng một partition
-               → thứ tự offset được bảo toàn theo từng thiết bị.
-      e) Gọi producer.poll(0) để xử lý delivery callback không blocking.
-      f) Ngủ POLL_INTERVAL_SECONDS giây trước khi lặp lại.
-
-  Ví dụ payload JSON được gửi vào Kafka:
-    {
-      "latitude": 52.52,
-      "longitude": 13.41,
-      "current": {
-        "time": "2026-04-30T10:00",
-        "temperature_2m": 14.3,
-        "relative_humidity_2m": 68,
-        "wind_speed_10m": 12.1,
-        "wind_direction_10m": 230,
-        "precipitation": 0.0,
-        ...
-      },
-      "iot_device_id": "device_1",
-      "ingestion_time": "2026-04-30T10:00:05Z"
+  Mỗi message gửi vào Kafka có cấu trúc:
+  {
+    "iot_device_id":  1,
+    "ingestion_time": "2026-05-07T10:00:01Z",
+    "data": {
+      "dt": 1746612001,           // Unix timestamp (event time)
+      "temp": 22.5,               // Nhiệt độ (°C)
+      "feels_like": 21.1,
+      "pressure": 1013,           // Áp suất (hPa)
+      "humidity": 65,             // Độ ẩm (%)
+      "dew_point": 15.3,
+      "uvi": 3.2,
+      "clouds": 40,
+      "visibility": 8000,
+      "wind_speed": 4.5,          // Tốc độ gió (m/s)
+      "wind_deg": 210,
+      "wind_gust": 7.1,
+      "weather": [{"id": 801, "main": "Clouds", "description": "few clouds"}],
+      "rain": {"1h": 0.5}         // Optional
+    },
+    "location": {
+      "lat": 40.71, "lon": -74.01, "timezone": "America/New_York"
     }
+  }
 
-── Tại sao dùng DEVICE_ID làm Kafka message key ──────────────
+── Cơ chế hoạt động ──────────────────────────────────────────
 
-  Kafka đảm bảo thứ tự (ordering) trong phạm vi một partition, không đảm bảo thứ tự
-  toàn cục giữa các partition. Bằng cách dùng DEVICE_ID làm key, toàn bộ lịch sử của
-  một thiết bị luôn nằm trong một partition duy nhất, theo đúng thứ tự thời gian.
-  Điều này đảm bảo:
-    - Thứ tự thông điệp: offset tăng dần = thứ tự thời gian tăng dần cho mỗi device.
-    - Phân vùng nhất quán: downstream consumer có thể tái tạo chuỗi sự kiện của thiết bị
-      mà không cần sort lại theo timestamp.
-    - Khả năng mở rộng: thêm thiết bị mới tự động phân tán vào các partition theo hash.
+  Một container duy nhất quản lý 60 trạm khí tượng được định nghĩa trong config.yaml, trải
+  rộng trên 6 châu lục. Producer chạy vòng lặp liên tục, gửi lần lượt 1 trạm/giây — tức 60
+  bản ghi mỗi phút. Dữ liệu nhiệt độ được sinh dựa trên mô hình khí hậu theo vĩ độ (nhiệt độ
+  giảm ~0.55°C mỗi độ vĩ độ) cộng thêm nhiễu Gaussian, đảm bảo tính thực tế của chuỗi thời
+  gian.
 
-── Dockerfile (iot-gateway/) ────────────────────────────────
-
-  Base image: python:3.11-slim — image gốc nhỏ gọn, không có thư viện không cần thiết.
-
-  Các bước build:
-    1. COPY requirement.txt và RUN pip install: cài đặt dependencies vào image.
-    2. COPY producer.py: đưa script vào image.
-    3. ENV: khai báo giá trị mặc định cho các biến môi trường (bị ghi đè bởi docker-compose).
-    4. CMD ["python", "producer.py"]: khởi chạy producer khi container start.
-
-  Biến môi trường cần thiết (truyền qua docker-compose):
-    DEVICE_ID, LATITUDE, LONGITUDE         — định danh và tọa độ thiết bị
-    KAFKA_BOOTSTRAP_SERVERS                — địa chỉ Kafka broker
-    KAFKA_TOPIC                            — tên topic (mặc định: iot-sensor-data)
-    POLL_INTERVAL_SECONDS                  — chu kỳ polling (mặc định: 18)
-    OPENMETEO_MAX_CALLS_PER_MIN            — quota phút của Open-Meteo (mặc định: 600)
-    NUM_GATEWAY_CONTAINERS                 — tổng số container gateway đang chạy song song
+  Message key được đặt bằng iot_device_id để Kafka hash cố định mỗi thiết bị vào một
+  partition duy nhất, bảo toàn thứ tự sự kiện theo từng thiết bị.
 
 
 ───────────────────────────────────────────────────────────────
-4.1.2. KAFKA-SPARK-CONSUMER — JOB INGEST DỮ LIỆU (kafka-spark-consumer/)
+4.3. KAFKA-SPARK-CONSUMER — INGEST VÀO MINIO (kafka-spark-consumer/)
 ───────────────────────────────────────────────────────────────
 
-Thư mục kafka-spark-consumer/ chứa Spark Structured Streaming job đóng vai trò là tầng
-ingest: liên tục đọc message từ Kafka và ghi nguyên vẹn xuống vùng lưu trữ raw trong MinIO,
-làm nền tảng cho các bước xử lý tiếp theo.
+Job Spark Structured Streaming này liên tục đọc message từ Kafka topic iot-sensor-data và
+ghi nguyên vẹn (không transform) xuống vùng raw trong MinIO dưới định dạng JSON, phân vùng
+theo ngày và thiết bị:
 
-── Thư viện sử dụng ──────────────────────────────────────────
+  s3a://raw/ingestion_date=2026-05-07/iot_device_id=1/<part-*.json>
 
-  - pyspark (3.5.1): Python API cho Apache Spark. Dùng Structured Streaming để xử lý
-    luồng dữ liệu liên tục theo mô hình micro-batch.
+Cấu hình spark-submit sử dụng 3 executor cores (= số partition Kafka), đảm bảo mỗi partition
+Kafka được xử lý bởi một Spark task riêng biệt, tối ưu hóa throughput.
 
-  Các JAR dependency được tải tự động qua spark-submit --packages khi container khởi động:
-    - spark-sql-kafka-0-10_2.12:3.5.1  — Kafka data source connector cho Spark
-    - hadoop-aws:3.3.4                  — Hadoop FileSystem implementation cho S3/MinIO
-    - aws-java-sdk-bundle:1.12.262      — AWS SDK để xác thực và gọi S3-compatible API
+Checkpoint được lưu tại s3a://raw/_checkpoints/ trên MinIO, đảm bảo exactly-once semantics:
+khi container restart, job tiếp tục đọc đúng từ offset đã commit, không mất hay trùng dữ liệu.
 
-  Các JAR này được cache vào volume ivy2_cache (/root/.ivy2) để lần khởi động tiếp theo
-  không cần tải lại từ Maven Central.
-
-── Luồng hoạt động của consumer.py ──────────────────────────
-
-  Bước 1 — Khởi tạo SparkSession:
-    SparkSession được khởi tạo với cấu hình S3A để kết nối MinIO:
-      - fs.s3a.endpoint       → địa chỉ nội bộ của MinIO container (http://minio:9000)
-      - fs.s3a.access.key     → MinIO access key
-      - fs.s3a.secret.key     → MinIO secret key
-      - fs.s3a.path.style.access = true  → bắt buộc với MinIO (không dùng virtual-hosted style)
-      - fs.s3a.impl           → S3AFileSystem, implementation xử lý giao thức s3a://
-
-  Bước 2 — Đọc stream từ Kafka:
-    spark.readStream.format("kafka") tạo một streaming DataFrame với schema chuẩn của Kafka
-    (key, value, topic, partition, offset, timestamp, ...). Các tùy chọn quan trọng:
-      - subscribe = iot-sensor-data     → subscribe vào topic cần đọc
-      - startingOffsets = earliest      → đọc lại từ đầu nếu chưa có checkpoint
-      - failOnDataLoss = false          → không dừng job nếu offset bị mất (log đã rotate)
-
-  Bước 3 — Trích xuất và làm phẳng dữ liệu:
-    Cột value (bytes) được cast sang STRING để lấy chuỗi JSON gốc.
-    Hai cột partition được trích xuất từ JSON bằng get_json_object():
-      - ingestion_date  ← $.ingestion_time   (dùng to_date để lấy phần ngày)
-      - iot_device_id   ← $.iot_device_id
-
-    Trường raw_json giữ nguyên toàn bộ payload gốc — không transform, không mất thông tin.
-
-  Bước 4 — Ghi xuống MinIO /raw (partitioned):
-    writeStream ghi file JSON vào MinIO theo cấu trúc phân vùng Hive:
-      s3a://raw/ingestion_date=2026-04-30/iot_device_id=device_1/<part-*.json>
-
-    Tùy chọn cấu hình:
-      - format("json")                   → ghi file JSON, dễ đọc và tương thích Trino
-      - partitionBy("ingestion_date",    → phân vùng 2 cấp, giúp Trino và Spark downstream
-                    "iot_device_id")       có thể prune partition, chỉ đọc dữ liệu cần thiết
-      - checkpointLocation               → lưu tiến trình đọc offset tại s3a://raw/_checkpoints/
-                                           đảm bảo exactly-once semantics khi job restart
-      - outputMode("append")             → chỉ ghi dữ liệu mới, không ghi đè
-      - trigger(processingTime=          → kích hoạt micro-batch mỗi POLL_INTERVAL_SECONDS giây,
-          f"{POLL_INTERVAL_SECONDS}s")     đồng bộ với tốc độ producer để mỗi batch xử lý
-                                           đúng số message đã được tạo ra từ lần trigger trước
-
-── Lý do căn chỉnh trigger với POLL_INTERVAL_SECONDS ────────
-
-  Nếu trigger quá thường xuyên (VD: 5s) trong khi producer gửi 1 message mỗi 18s, phần
-  lớn các batch sẽ rỗng (0 row), tạo ra overhead không cần thiết về checkpoint và S3 write.
-  Ngược lại, nếu trigger quá lâu, buffer Kafka tích lũy nhiều message, tăng độ trễ end-to-end.
-  Đặt trigger = POLL_INTERVAL_SECONDS tối ưu hóa cả latency lẫn tài nguyên.
-
-── Dockerfile (kafka-spark-consumer/) ───────────────────────
-
-  Base image: bitnamilegacy/spark:3.5 — image đã bao gồm Spark 3.5, Java 11, và spark-submit
-  sẵn trong PATH. Không cần cài Spark thủ công.
-
-  Các bước build:
-    1. USER root: chuyển sang root để có quyền cài pip package.
-    2. COPY requirement.txt và RUN pip install: cài pyspark (cần thiết cho Python client API).
-    3. COPY consumer.py: đưa job script vào image.
-    4. CMD (shell form): lệnh spark-submit được viết dưới dạng shell form (không phải JSON array)
-       để biến môi trường $SPARK_MASTER_URL được expand đúng lúc container chạy.
-
-  Lệnh CMD đầy đủ:
-    spark-submit \
-      --master $SPARK_MASTER_URL \
-      --deploy-mode client \
-      --name kafka-raw-consumer \
-      --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1, \
-                 org.apache.hadoop:hadoop-aws:3.3.4, \
-                 com.amazonaws:aws-java-sdk-bundle:1.12.262 \
-      --conf spark.driver.host=kafka-spark-consumer \
-      consumer.py
-
-  Lý do các tùy chọn spark-submit:
-    --master $SPARK_MASTER_URL     → kết nối tới Spark standalone cluster (spark://spark-master:7077)
-    --deploy-mode client           → driver process chạy ngay trong container này (bắt buộc
-                                     với PySpark script trên standalone cluster — cluster mode
-                                     chỉ hỗ trợ Java/Scala JAR, không phải .py script)
-    --packages                     → tải JAR từ Maven Central trước khi JVM khởi động, đảm
-                                     bảo Spark nhận ra data source "kafka" và "s3a" ngay từ đầu
-                                     (nếu đặt trong SparkSession.builder thì đã quá muộn)
-    --conf spark.driver.host       → chỉ định hostname của driver để worker biết địa chỉ
-                                     để gửi kết quả task về (quan trọng trong Docker network)
-
-── Cấu hình biến môi trường ─────────────────────────────────
-
-  Biến                       Giá trị mẫu               Lý do cấu hình
-  ─────────────────────────  ───────────────────────── ────────────────────────────────────────
-  SPARK_MASTER_URL           spark://spark-master:7077  Địa chỉ Spark master nội bộ
-  KAFKA_BOOTSTRAP_SERVERS    kafka:9092                 Kafka broker nội bộ trong Docker network
-  KAFKA_TOPIC                iot-sensor-data            Topic duy nhất cho toàn bộ thiết bị
-  MINIO_ENDPOINT             http://minio:9000          S3-compatible endpoint nội bộ
-  MINIO_ACCESS_KEY           admin                      Xác thực MinIO (S3 access key)
-  MINIO_SECRET_KEY           password123                Xác thực MinIO (S3 secret key)
-  POLL_INTERVAL_SECONDS      18                         Đồng bộ trigger với tốc độ producer
+JAR dependency (Kafka connector, hadoop-aws, aws-java-sdk) được cache trong Docker volume
+ivy2_cache để tránh tải lại từ Maven Central mỗi lần restart.
 
 
 ───────────────────────────────────────────────────────────────
-4.1.3. SPARK-STREAM — JOB XỬ LÝ DỮ LIỆU (spark-stream/)
-───────────────────────────────────────────────────────────────
-[Chưa triển khai — sẽ được mô tả ở mục tiếp theo]
-
-
-───────────────────────────────────────────────────────────────
-4.1.4. MINIO-DATA — LƯU TRỮ BỀN VỮNG (minio-data/)
-───────────────────────────────────────────────────────────────
-[Chưa triển khai — sẽ được mô tả ở mục tiếp theo]
-
-
-───────────────────────────────────────────────────────────────
-4.1.5. TRINO — QUERY ENGINE (trino/)
-───────────────────────────────────────────────────────────────
-[Chưa triển khai — sẽ được mô tả ở mục tiếp theo]
-
-
-───────────────────────────────────────────────────────────────
-4.1.6. GRAFANA — TRỰC QUAN HÓA DỮ LIỆU (grafana/)
-───────────────────────────────────────────────────────────────
-[Chưa triển khai — sẽ được mô tả ở mục tiếp theo]
-
-
-───────────────────────────────────────────────────────────────
-4.1.7. DOCKER COMPOSE VÀ DOCKERFILE
+4.4. SPARK-STREAM — XỬ LÝ VÀ MÔ HÌNH HÓA DỮ LIỆU (spark-stream/)
 ───────────────────────────────────────────────────────────────
 
-Toàn bộ stack được điều phối bằng một file docker-compose.yaml duy nhất. Để hỗ trợ vận hành
-từng tầng độc lập (ingest, processing, serve), docker-compose sử dụng cơ chế profiles — chỉ
-những service có profile tương ứng mới được khởi động.
+Đây là thành phần trung tâm của pipeline, được thiết kế theo mô hình ephemeral container:
+thay vì chạy như một long-running streaming job, spark-stream khởi động → xử lý toàn bộ
+dữ liệu mới → dừng hẳn → ngủ POLL_INTERVAL_SECONDS giây → lặp lại từ đầu. Mỗi lần chạy
+là một "lô mini" (mini-batch) độc lập, xử lý đúng phần dữ liệu đã xuất hiện trong /raw kể
+từ checkpoint trước.
 
-── Danh sách services và cấu hình ───────────────────────────
+Cơ chế này được thực hiện thông qua vòng lặp shell trong CMD của Dockerfile:
 
-  SERVICE               IMAGE                         SỐ CONTAINER  PORT FORWARD         PROFILE
-  ─────────────────────────────────────────────────────────────────────────────────────────────────
-  zookeeper             confluentinc/cp-zookeeper:7.4  1             2181:2181            ingest, full
-  kafka                 confluentinc/cp-kafka:7.4      1             9092:9092            ingest, full
-  minio                 minio/minio:latest             1             9000:9000 (API)      ingest, processing,
-                                                                     9001:9001 (Console)  serve, full
-  minio-client (mc)     minio/mc                       1             —                    ingest, processing,
-                                                                                          serve, full
-  iot-gateway-1         build ./iot-gateway            1             —                    ingest, full
-  iot-gateway-2         build ./iot-gateway            1             —                    ingest, processing,
-                                                                                          full
-  spark-master          bitnamilegacy/spark:3.5        1             7077:7077 (RPC)      ingest, processing,
-                                                                     8081:8081 (Web UI)   full
-  spark-worker          bitnamilegacy/spark:3.5        1             8082:8082 (Web UI)   ingest, processing,
-                                                                                          full
-  kafka-spark-consumer  build ./kafka-spark-consumer   1             4040:4040 (App UI)   ingest, full
-  spark-stream          build ./spark-stream           1             —                    processing, full
-  trino                 trinodb/trino:latest           1             8080:8080            serve, full
-  grafana               grafana/grafana:latest         1             3000:3000            serve, full
+  while true; do
+      spark-submit ... /app/stream.py   # chạy job, blocks đến khi hoàn tất
+      sleep ${POLL_INTERVAL_SECONDS}    # ngủ 60 giây
+  done
 
-── Giải thích port forward ──────────────────────────────────
+Bên trong mỗi lần chạy, Spark dùng trigger(availableNow=True): query tự dừng sau khi đã xử
+lý hết file hiện có, không chờ dữ liệu mới. Kết hợp với checkpoint, mỗi mini-batch chỉ đọc
+đúng các file được ghi bởi kafka-spark-consumer trong 60 giây vừa qua.
 
-  Port   Service              Mục đích
-  ─────  ───────────────────  ────────────────────────────────────────────────────────────────
-  2181   zookeeper            Zookeeper client port — Kafka broker kết nối vào
-  9092   kafka                Kafka broker — producer/consumer kết nối qua PLAINTEXT
-  9000   minio                MinIO S3-compatible API — Spark/Trino dùng giao thức s3a://
-  9001   minio                MinIO Web Console — quản lý bucket, xem file qua trình duyệt
-  7077   spark-master         Spark standalone master RPC — worker và driver đăng ký vào đây
-  8081   spark-master         Spark Master Web UI — xem danh sách worker, job đang chạy
-  8082   spark-worker         Spark Worker Web UI — xem log executor, tài nguyên sử dụng
-  4040   kafka-spark-consumer Spark Application Detail UI — xem chi tiết stages, tasks, DAG,
-                              throughput của streaming job đang chạy
-  8080   trino                Trino coordinator HTTP — client JDBC/CLI kết nối, Web UI
-  3000   grafana              Grafana Web UI — dashboard trực quan hóa dữ liệu
+So sánh với mô hình long-running streaming:
+  - Long-running: 1 JVM tồn tại mãi, nhận micro-batch liên tục, tiêu tốn tài nguyên kể cả
+    lúc không có dữ liệu, khó restart sạch.
+  - Ephemeral (mô hình này): JVM chỉ tồn tại trong thời gian xử lý (~30–60 giây/chu kỳ),
+    sau đó giải phóng hoàn toàn tài nguyên Spark worker. Tương đương với Kubernetes CronJob
+    hoặc scheduled task, dễ giám sát trạng thái (exit 0 = thành công, exit ≠ 0 = lỗi).
 
-── Profiles ─────────────────────────────────────────────────
+Mỗi chu kỳ 60 giây thực hiện đầy đủ 10 bước theo thứ tự:
 
-  Profile      Mục đích                                          Services được khởi động
-  ───────────  ──────────────────────────────────────────────    ──────────────────────────────────────
-  ingest       Chạy toàn bộ tầng thu thập dữ liệu              zookeeper, kafka, minio, mc,
-                                                                 iot-gateway-1, iot-gateway-2 (qua kafka),
-                                                                 spark-master, spark-worker,
-                                                                 kafka-spark-consumer
-  processing   Chạy tầng xử lý (đọc raw, ghi warehouse)        minio, mc, iot-gateway-2,
-                                                                 spark-master, spark-worker, spark-stream
-  serve        Chạy tầng truy vấn và trực quan hóa             minio, mc, trino, grafana
-  full         End-to-end (kiểm thử toàn bộ pipeline)          Tất cả services trên
+  1. Đọc tất cả file JSON mới từ s3a://raw/ (Spark Structured Streaming).
+  2. Flatten schema OWM: trích xuất các trường từ cấu trúc JSON lồng nhau thành bản ghi phẳng.
+  3. Dedup trong batch: dropDuplicates(event_time, iot_device_id).
+  4. MERGE INTO staging.events (Iceberg): dedup xuyên run (cross-batch deduplication).
+  5. Upsert dim_date: thêm các ngày mới từ batch vào bảng chiều thời gian.
+  6. SCD2 merge dim_iot_device: cập nhật lịch sử thay đổi thông tin thiết bị.
+  7. SCD2 merge dim_country: cập nhật lịch sử thay đổi thông tin quốc gia.
+  8. INSERT INTO fact_measurements: nạp bản ghi đo lường với khóa ngoại tới các chiều.
+  9. MERGE INTO fact_hourly_agg: tái tính tổng hợp theo giờ cho 2 giờ gần nhất.
+  10. Compact small files: gọi Iceberg rewrite_data_files() cho 2 ngày gần nhất.
 
-  Cách dùng:
-    docker-compose --profile ingest     up -d   # Chạy tầng ingest
-    docker-compose --profile processing up -d   # Chạy tầng processing
-    docker-compose --profile serve      up -d   # Chạy tầng serve
-    docker-compose --profile full       up -d   # Chạy toàn bộ
+── Mô hình dữ liệu Iceberg (warehouse/) ─────────────────────
 
-── Service khởi tạo tự động: minio-client (mc) ──────────────
+  Tất cả bảng lưu trữ dưới dạng Apache Iceberg trên MinIO (s3a://warehouse/), sử dụng
+  Hadoop catalog (file-based, không cần metastore). Trino đọc trực tiếp từ cùng warehouse
+  path.
 
-  Container minio-client chạy một lần sau khi MinIO sẵn sàng, tự động tạo 3 bucket:
-    - raw/        → lưu dữ liệu thô từ kafka-spark-consumer
-    - staging/    → vùng trung gian cho spark-stream xử lý
-    - warehouse/  → lưu dữ liệu đã xử lý dưới dạng Iceberg tables, Trino đọc từ đây
+  Bảng              Loại      Phân vùng            Mô tả
+  ────────────────  ────────  ───────────────────  ──────────────────────────────────────────
+  staging.events    staging   days(event_time)     Bản ghi thô đã flatten, dùng để dedup
+  dim_date          dimension —                    Chiều thời gian (ngày, tháng, quý, năm)
+  dim_iot_device    dimension —                    Chiều thiết bị IoT (SCD Type 2)
+  dim_country       dimension —                    Chiều quốc gia/khu vực (SCD Type 2)
+  fact_measurements fact      days(event_time)     Bảng sự kiện chính với FK tới các chiều
+  fact_hourly_agg   aggregate hours(window_start)  Tổng hợp theo giờ (avg temp, avg humidity…)
 
-  Sau khi tạo xong bucket, container tự thoát (exit 0) — đây là init container pattern,
-  tương tự InitContainers trong Kubernetes.
+── Tài nguyên Spark ──────────────────────────────────────────
 
-── Named volume: ivy2_cache ─────────────────────────────────
+  spark-stream sử dụng 6 executor cores và 512 MB executor memory. Toàn bộ 6 cores được
+  gom vào một executor duy nhất (--conf spark.executor.cores=6) để giữ memory footprint trong
+  ngưỡng 512 MB thay vì nhân lên 6 × 512 MB.
 
-  Volume ivy2_cache được mount vào /root/.ivy2 trong container kafka-spark-consumer.
-  Spark dùng thư mục này để cache các JAR tải qua --packages (Maven/Ivy resolver).
-  Không có volume này, mỗi lần container restart sẽ phải tải lại toàn bộ JAR (~200MB)
-  từ Maven Central, làm chậm thời gian khởi động job.
 
-── Lý do không dùng named volume cho MinIO ──────────────────
+───────────────────────────────────────────────────────────────
+4.5. DOCKER COMPOSE — ĐIỀU PHỐI STACK
+───────────────────────────────────────────────────────────────
 
-  MinIO dùng bind mount (./minio-data:/data) thay vì named volume để:
-    - Dữ liệu lưu trực tiếp trên filesystem của host, dễ kiểm tra bằng ls/find.
-    - Có thể sao lưu bằng rsync hoặc cp đơn giản.
-    - Khi xóa project (docker-compose down -v), dữ liệu vẫn còn trên máy host.
+── Services và port ──────────────────────────────────────────
 
+  SERVICE               IMAGE                         PORT              PROFILE
+  ────────────────────  ────────────────────────────  ────────────────  ───────────────────
+  zookeeper             confluentinc/cp-zookeeper:7.4 2181              ingest, full
+  kafka                 confluentinc/cp-kafka:7.4     9092              ingest, full
+  minio                 minio/minio:latest            9000, 9001        ingest/processing/serve
+  minio-client (mc)     minio/mc                      —                 ingest/processing/serve
+  iot-gateway           build ./iot-gateway           —                 ingest, full
+  spark-master          bitnamilegacy/spark:3.5       7077, 8081        ingest, processing
+  spark-worker          build ./spark-worker          8082              ingest, processing
+  kafka-spark-consumer  build ./kafka-spark-consumer  4040              ingest, full
+  spark-stream          build ./spark-stream          4041              processing, full
+  trino                 trinodb/trino:latest          8080              serve, full
+  grafana               grafana/grafana:latest        3000              serve, full
+
+── Điểm đáng chú ý ───────────────────────────────────────────
+
+  - minio-client (mc): init container chạy một lần, tự động tạo 3 bucket (raw, staging,
+    warehouse) rồi thoát. Pattern tương tự InitContainers trong Kubernetes.
+
+  - ivy2_cache: named volume mount vào /root/.ivy2 của kafka-spark-consumer và spark-stream,
+    cache JAR Maven (~200 MB) để tránh tải lại khi restart container.
+
+  - MinIO dùng bind-mount (./minio-data:/data) thay vì named volume để dữ liệu tồn tại
+    trực tiếp trên filesystem host, dễ kiểm tra và sao lưu.
+
+  - spark.driver.host được set tường minh trong CMD của mỗi Dockerfile (kafka-spark-consumer,
+    spark-stream) để worker trong Docker network biết địa chỉ driver để trả kết quả task về.
+
+
+───────────────────────────────────────────────────────────────
+4.6. TRINO VÀ GRAFANA — TẦNG PHỤC VỤ (serve)
+───────────────────────────────────────────────────────────────
+
+Trino được cấu hình với Iceberg connector trỏ trực tiếp vào warehouse path trên MinIO
+(s3a://warehouse/). File cấu hình catalog (trino/catalog/iceberg.properties) khai báo
+hive.metastore=file, cho phép Trino tự đọc metadata từ filesystem mà không cần Hive Metastore.
+Người dùng có thể thực hiện SQL ad-hoc trực tiếp trên dữ liệu Iceberg qua cổng 8080.
+
+Grafana kết nối vào Trino qua plugin Trino data source (JDBC), cho phép xây dựng dashboard
+near real-time với dữ liệu mới nhất từ fact_measurements và fact_hourly_agg. Cấu hình
+provisioning dashboard và datasource được lưu trong grafana/provisioning/ để tự động load
+khi container khởi động.
+
+
+───────────────────────────────────────────────────────────────
+4.7. THÔNG LƯỢNG VÀ ĐỘ TRỄ CỦA PIPELINE
+───────────────────────────────────────────────────────────────
+
+── Thông lượng sinh dữ liệu (Producer) ──────────────────────
+
+  Producer vòng lặp liên tục qua 60 trạm, sleep 1 giây giữa mỗi trạm:
+
+    Tần suất sinh bản ghi  = 60 trạm ÷ 60 giây = 1 msg/giây = 60 msg/phút
+    Kích thước mỗi message ≈ 500 – 700 bytes (JSON với ~22 trường số)
+    Băng thông Kafka ingest ≈ 1 msg/s × 600 B ≈ 600 B/s ≈ 2.1 MB/giờ
+
+  Lượng dữ liệu tích lũy theo thời gian:
+
+    Khoảng thời gian   Số bản ghi     Dung lượng raw (ước tính)
+    ───────────────    ────────────   ─────────────────────────
+    1 phút             60 msg         ~36 KB
+    1 giờ              3.600 msg      ~2.1 MB
+    1 ngày             86.400 msg     ~50 MB
+    1 tuần             604.800 msg    ~350 MB
+
+── Thông lượng xử lý theo tầng ──────────────────────────────
+
+  Tầng 1 — kafka-spark-consumer (Kafka → MinIO /raw):
+    Trigger mỗi POLL_INTERVAL_SECONDS = 600 giây.
+    Mỗi micro-batch xử lý ≈ 600 messages (60 msg/phút × 10 phút).
+    Thời gian xử lý mỗi batch: < 10 giây (3 Spark tasks song song, mỗi task
+    xử lý 1 Kafka partition với ~200 msg).
+    Utilization: ~10 giây xử lý / 600 giây chu kỳ ≈ 1.7% → rất nhiều headroom.
+
+  Tầng 2 — spark-stream (/raw → Iceberg warehouse):
+    Trigger mỗi POLL_INTERVAL_SECONDS = 600 giây với trigger=availableNow.
+    Mỗi run xử lý toàn bộ file JSON mới trong /raw kể từ checkpoint trước (~600 rows).
+    Thực hiện 10 bước pipeline (flatten → dedup → 4 bảng warehouse → agg → compact).
+    Thời gian xử lý ước tính: 30 – 90 giây / run tùy kích thước batch và cold-start JVM.
+    Utilization: ~60 giây xử lý / 600 giây chu kỳ ≈ 10%.
+
+── Độ trễ end-to-end (Event Time → Visible in Grafana) ──────
+
+  Sự kiện từ khi producer sinh ra tới khi xuất hiện trên dashboard Grafana trải qua
+  các bước trễ tích lũy sau:
+
+    Bước                                  Độ trễ ước tính
+    ────────────────────────────────────  ──────────────────────
+    Producer → Kafka (network + ack)      < 1 giây
+    Kafka → MinIO /raw (trigger interval) 0 – 600 giây (trung bình 300 giây)
+    MinIO /raw → Iceberg warehouse        0 – 600 giây (trung bình 300 giây)
+    Spark processing time                 30 – 90 giây
+    Grafana refresh interval              30 giây (mặc định)
+    ────────────────────────────────────  ──────────────────────
+    Tổng độ trễ (worst case)              ≈ 1.230 giây ≈ 20 phút
+    Tổng độ trễ (trung bình)              ≈ 660 giây  ≈ 11 phút
+
+  Đây là đặc tính của kiến trúc micro-batch: độ trễ tỉ lệ thuận với trigger interval.
+  Giảm POLL_INTERVAL_SECONDS xuống (VD: 60 giây) có thể kéo độ trễ trung bình xuống còn
+  ~2 phút, nhưng sẽ tăng số lượng small files trong MinIO và overhead checkpoint.
+
+── Khả năng mở rộng ──────────────────────────────────────────
+
+  Pipeline hiện tại chạy trên 1 Spark worker với 9 cores. Để tăng thông lượng:
+
+    Tăng số trạm: thêm stations vào config.yaml (không cần rebuild image).
+    Tăng Kafka partitions (KAFKA_NUM_PARTITIONS) và CONSUMER_TOTAL_EXECUTOR_CORES
+      tương ứng để tăng song song hóa tầng ingest.
+    Thêm Spark worker: docker-compose scale spark-worker=2, Spark tự phân bổ task.
+    Giảm POLL_INTERVAL_SECONDS: tăng tần suất xử lý, giảm độ trễ end-to-end.
 
