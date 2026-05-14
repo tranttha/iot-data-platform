@@ -1,0 +1,906 @@
+{
+  "__inputs": [],
+  "__requires": [],
+  "annotations": {
+    "list": []
+  },
+  "description": "IoT sensor data overview \u2014 temperature, humidity, pressure, wind, UVI, rain",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 100,
+      "title": "Live Metrics \u2014 Last 1 Hour",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "trino_lakehouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "unit": "celsius"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 1
+      },
+      "id": 1,
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "title": "Temperature by Device (\u00b0C)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "trino_lakehouse"
+          },
+          "format": 0,
+          "rawQuery": true,
+          "rawSQL": "SELECT event_time AS time,\n       CAST(iot_device_id AS VARCHAR) AS metric,\n       temp AS value\nFROM lakehouse.warehouse.fact_measurements\nWHERE event_time >= now() - INTERVAL '1' HOUR\n  AND CAST(iot_device_id AS VARCHAR) IN ($device)\nORDER BY 1"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "trino_lakehouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 1
+      },
+      "id": 2,
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "title": "Humidity by Device (%)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "trino_lakehouse"
+          },
+          "format": 0,
+          "rawQuery": true,
+          "rawSQL": "SELECT event_time AS time,\n       CAST(iot_device_id AS VARCHAR) AS metric,\n       CAST(humidity AS DOUBLE) AS value\nFROM lakehouse.warehouse.fact_measurements\nWHERE event_time >= now() - INTERVAL '1' HOUR\n  AND CAST(iot_device_id AS VARCHAR) IN ($device)\nORDER BY 1"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "trino_lakehouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "unit": "pressurehpa"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 9
+      },
+      "id": 3,
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "title": "Atmospheric Pressure (hPa)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "trino_lakehouse"
+          },
+          "format": 0,
+          "rawQuery": true,
+          "rawSQL": "SELECT event_time AS time,\n       CAST(iot_device_id AS VARCHAR) AS metric,\n       CAST(pressure AS DOUBLE) AS value\nFROM lakehouse.warehouse.fact_measurements\nWHERE event_time >= now() - INTERVAL '1' HOUR\n  AND CAST(iot_device_id AS VARCHAR) IN ($device)\nORDER BY 1"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "trino_lakehouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "unit": "velocityms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 9
+      },
+      "id": 4,
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "title": "Wind Speed (m/s)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "trino_lakehouse"
+          },
+          "format": 0,
+          "rawQuery": true,
+          "rawSQL": "SELECT event_time AS time,\n       CAST(iot_device_id AS VARCHAR) AS metric,\n       wind_speed AS value\nFROM lakehouse.warehouse.fact_measurements\nWHERE event_time >= now() - INTERVAL '1' HOUR\n  AND CAST(iot_device_id AS VARCHAR) IN ($device)\nORDER BY 1"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "trino_lakehouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "unit": "short",
+          "displayName": "UVI"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 17
+      },
+      "id": 10,
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "title": "UV Index",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "trino_lakehouse"
+          },
+          "format": 0,
+          "rawQuery": true,
+          "rawSQL": "SELECT event_time AS time,\n       CAST(iot_device_id AS VARCHAR) AS metric,\n       uvi AS value\nFROM lakehouse.warehouse.fact_measurements\nWHERE event_time >= now() - INTERVAL '1' HOUR\n  AND CAST(iot_device_id AS VARCHAR) IN ($device)\nORDER BY 1"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "trino_lakehouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "unit": "lengthmm"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 17
+      },
+      "id": 11,
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "title": "Rain (1h) mm",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "trino_lakehouse"
+          },
+          "format": 0,
+          "rawQuery": true,
+          "rawSQL": "SELECT event_time AS time,\n       CAST(iot_device_id AS VARCHAR) AS metric,\n       COALESCE(rain_1h, 0.0) AS value\nFROM lakehouse.warehouse.fact_measurements\nWHERE event_time >= now() - INTERVAL '1' HOUR\n  AND CAST(iot_device_id AS VARCHAR) IN ($device)\nORDER BY 1"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "trino_lakehouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "unit": "velocityms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 17
+      },
+      "id": 12,
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "title": "Wind Gust (m/s)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "trino_lakehouse"
+          },
+          "format": 0,
+          "rawQuery": true,
+          "rawSQL": "SELECT event_time AS time,\n       CAST(iot_device_id AS VARCHAR) AS metric,\n       COALESCE(wind_gust, wind_speed) AS value\nFROM lakehouse.warehouse.fact_measurements\nWHERE event_time >= now() - INTERVAL '1' HOUR\n  AND CAST(iot_device_id AS VARCHAR) IN ($device)\nORDER BY 1"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
+      "id": 101,
+      "title": "Hourly Aggregates \u2014 Last 24 Hours",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "trino_lakehouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "unit": "celsius"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 26
+      },
+      "id": 5,
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "title": "Hourly Avg Temperature (\u00b0C)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "trino_lakehouse"
+          },
+          "format": 0,
+          "rawQuery": true,
+          "rawSQL": "SELECT hour_bucket AS time,\n       CAST(iot_device_id AS VARCHAR) AS metric,\n       avg_temp AS value\nFROM lakehouse.warehouse.fact_hourly_agg\nWHERE hour_bucket >= now() - INTERVAL '24' HOUR\n  AND CAST(iot_device_id AS VARCHAR) IN ($device)\nORDER BY 1"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "trino_lakehouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 26
+      },
+      "id": 6,
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "title": "Hourly Avg Humidity (%)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "trino_lakehouse"
+          },
+          "format": 0,
+          "rawQuery": true,
+          "rawSQL": "SELECT hour_bucket AS time,\n       CAST(iot_device_id AS VARCHAR) AS metric,\n       avg_humidity AS value\nFROM lakehouse.warehouse.fact_hourly_agg\nWHERE hour_bucket >= now() - INTERVAL '24' HOUR\n  AND CAST(iot_device_id AS VARCHAR) IN ($device)\nORDER BY 1"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "trino_lakehouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "unit": "velocityms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 34
+      },
+      "id": 13,
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "title": "Hourly Avg Wind Speed (m/s)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "trino_lakehouse"
+          },
+          "format": 0,
+          "rawQuery": true,
+          "rawSQL": "SELECT hour_bucket AS time,\n       CAST(iot_device_id AS VARCHAR) AS metric,\n       avg_wind_speed AS value\nFROM lakehouse.warehouse.fact_hourly_agg\nWHERE hour_bucket >= now() - INTERVAL '24' HOUR\n  AND CAST(iot_device_id AS VARCHAR) IN ($device)\nORDER BY 1"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "trino_lakehouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "unit": "pressurehpa"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 34
+      },
+      "id": 14,
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "title": "Hourly Avg Pressure (hPa)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "trino_lakehouse"
+          },
+          "format": 0,
+          "rawQuery": true,
+          "rawSQL": "SELECT hour_bucket AS time,\n       CAST(iot_device_id AS VARCHAR) AS metric,\n       avg_pressure AS value\nFROM lakehouse.warehouse.fact_hourly_agg\nWHERE hour_bucket >= now() - INTERVAL '24' HOUR\n  AND CAST(iot_device_id AS VARCHAR) IN ($device)\nORDER BY 1"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 42
+      },
+      "id": 102,
+      "title": "Pipeline Health",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "trino_lakehouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 30
+              },
+              {
+                "color": "green",
+                "value": 55
+              }
+            ]
+          },
+          "mappings": []
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 43
+      },
+      "id": 7,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background"
+      },
+      "title": "Active Devices (last 5 min)",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "trino_lakehouse"
+          },
+          "format": 1,
+          "rawQuery": true,
+          "rawSQL": "SELECT COUNT(DISTINCT iot_device_id) AS value\nFROM lakehouse.warehouse.fact_measurements\nWHERE event_time >= now() - INTERVAL '5' MINUTE"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "trino_lakehouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 43
+      },
+      "id": 8,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background"
+      },
+      "title": "Events Ingested (last 1 h)",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "trino_lakehouse"
+          },
+          "format": 1,
+          "rawQuery": true,
+          "rawSQL": "SELECT COUNT(*) AS value\nFROM lakehouse.warehouse.fact_measurements\nWHERE event_time >= now() - INTERVAL '1' HOUR"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "trino_lakehouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dateTimeAsIso",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 8,
+        "y": 43
+      },
+      "id": 9,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value"
+      },
+      "title": "Latest Event Time",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "trino_lakehouse"
+          },
+          "format": 1,
+          "rawQuery": true,
+          "rawSQL": "SELECT MAX(event_time) AS value\nFROM lakehouse.warehouse.fact_measurements"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "trino_lakehouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 120
+              },
+              {
+                "color": "red",
+                "value": 300
+              }
+            ]
+          }
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 14,
+        "y": 43
+      },
+      "id": 15,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background"
+      },
+      "title": "Ingestion Lag (event \u2192 warehouse)",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "trino_lakehouse"
+          },
+          "format": 1,
+          "rawQuery": true,
+          "rawSQL": "SELECT date_diff('second', MAX(event_time), MAX(ingestion_time)) AS value\nFROM lakehouse.warehouse.fact_measurements\nWHERE ingestion_time >= now() - INTERVAL '10' MINUTE"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "trino_lakehouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "iot_device_id"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Device ID"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "country_code"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Country"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "avg_temp"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Avg Temp (\u00b0C)"
+              },
+              {
+                "id": "unit",
+                "value": "celsius"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "avg_humidity"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Avg Humidity (%)"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "avg_wind_speed"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Avg Wind (m/s)"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "record_count"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Records (1h)"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 47
+      },
+      "id": 16,
+      "options": {
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "Device ID"
+          }
+        ]
+      },
+      "title": "Device Summary Table (last 1 h)",
+      "type": "table",
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "trino_lakehouse"
+          },
+          "format": 1,
+          "rawQuery": true,
+          "rawSQL": "SELECT iot_device_id,\n       country_code,\n       ROUND(AVG(temp), 2)       AS avg_temp,\n       ROUND(AVG(humidity), 2)   AS avg_humidity,\n       ROUND(AVG(wind_speed), 2) AS avg_wind_speed,\n       COUNT(*)                  AS record_count\nFROM lakehouse.warehouse.fact_measurements\nWHERE event_time >= now() - INTERVAL '1' HOUR\nGROUP BY iot_device_id, country_code\nORDER BY iot_device_id"
+        }
+      ]
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 38,
+  "tags": [
+    "iot",
+    "weather",
+    "lakehouse"
+  ],
+  "templating": {
+    "list": [
+      {
+        "datasource": {
+          "type": "trino-datasource",
+          "uid": "trino_lakehouse"
+        },
+        "definition": "SELECT DISTINCT iot_device_id FROM lakehouse.warehouse.dim_iot_device WHERE is_current = TRUE ORDER BY 1",
+        "hide": 0,
+        "includeAll": true,
+        "multi": true,
+        "name": "device",
+        "label": "Device",
+        "query": "SELECT DISTINCT iot_device_id FROM lakehouse.warehouse.dim_iot_device WHERE is_current = TRUE ORDER BY 1",
+        "refresh": 2,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-3h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "IoT Platform Overview",
+  "uid": "iot-platform-overview",
+  "version": 2
+}

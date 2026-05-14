@@ -43,6 +43,7 @@ def _build_spark() -> SparkSession:
         .config(f"spark.sql.catalog.{C.CATALOG_NAME}",
                 "org.apache.iceberg.spark.SparkCatalog")
         .config(f"spark.sql.catalog.{C.CATALOG_NAME}.type",      C.CATALOG_TYPE)
+        .config(f"spark.sql.catalog.{C.CATALOG_NAME}.uri",        C.HIVE_METASTORE_URI)
         .config(f"spark.sql.catalog.{C.CATALOG_NAME}.warehouse",  C.CATALOG_WAREHOUSE)
         .getOrCreate()
     )
@@ -71,6 +72,10 @@ def _make_batch_fn(spark: SparkSession):
 def main() -> None:
     spark = _build_spark()
     spark.sparkContext.setLogLevel("WARN")
+
+    # Ensure fact_measurements table exists before fact_hourly_agg.merge() runs,
+    # even if the stream processes no new batches (e.g. empty or already-checkpointed data).
+    fact_measurements.ensure_table(spark)
 
     # Run streaming job — blocks until availableNow=True query completes
     staging.run(spark, on_batch=_make_batch_fn(spark))

@@ -19,6 +19,7 @@ KAFKA_NUM_PARTITIONS    = int(os.environ.get("KAFKA_NUM_PARTITIONS", "3"))
 # POLL_INTERVAL_SECONDS   = int(os.environ.get("POLL_INTERVAL_SECONDS", _defaults["poll_interval_seconds"]))
 # KILL_AFTER_SECONDS      = int(os.environ.get("KILL_AFTER_SECONDS",    _defaults["kill_after_seconds"]))
 OWM_API_KEY             = os.environ["OWM_API_KEY"]
+OWM_API_URL             = "https://api.openweathermap.org/data/3.0/onecall"
 
 # ── Station list (defined entirely in config.yaml) ─────────────────────────────
 STATIONS = _cfg["stations"]  # list of {device_id, city, lat, lon}

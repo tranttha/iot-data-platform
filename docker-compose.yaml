@@ -235,6 +235,34 @@ services:
       - "4040:4040"
 
   ####################################################
+  # HIVE METASTORE (standalone, Derby-backed)
+  # Iceberg catalog registry — no S3 access needed;
+  # table locations are stored as strings pointing to MinIO.
+  ####################################################
+
+  hive-metastore:
+    image: apache/hive:4.0.0
+    container_name: hive-metastore
+
+    profiles: [processing, serve, full]
+
+    depends_on:
+      - minio
+
+    environment:
+      SERVICE_NAME: metastore
+      DB_DRIVER: derby
+      # Add hadoop-aws + AWS SDK jars so HMS can validate s3a:// schema locations
+      HIVE_AUX_JARS_PATH: /opt/hadoop/share/hadoop/tools/lib/hadoop-aws-3.3.6.jar:/opt/hadoop/share/hadoop/tools/lib/aws-java-sdk-bundle-1.12.367.jar
+
+    ports:
+      - "9083:9083"
+
+    volumes:
+      - hive_metastore_db:/opt/hive/data
+      - ./hive/hive-site.xml:/opt/hive/conf/hive-site.xml:ro
+
+  ####################################################
   # SPARK STREAM PROCESSING
   ####################################################
 
@@ -249,6 +277,7 @@ services:
     depends_on:
       - spark-master
       - minio
+      - hive-metastore
 
     environment:
       SPARK_MASTER_URL:              ${SPARK_MASTER_URL}
@@ -278,6 +307,7 @@ services:
 
     depends_on:
       - minio
+      - hive-metastore
 
     ports:
       - "8080:8080"
@@ -305,7 +335,12 @@ services:
     environment:
       GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER}
       GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD}
+      GF_INSTALL_PLUGINS: trino-datasource
+
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
 
 volumes:
   ivy2_cache:
+  hive_metastore_db:
 

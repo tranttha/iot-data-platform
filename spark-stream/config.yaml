@@ -25,7 +25,8 @@ storage:
 # Both spark-stream and Trino point to the same root.
 iceberg:
   catalog_name:   "lakehouse"
-  catalog_type:   "hadoop"      # file-based; root resolved from warehouse_path at runtime
+  catalog_type:   "hive"        # HiveCatalog backed by standalone HMS
+  hive_metastore_uri: "thrift://hive-metastore:9083"
 
 # ── Staging layer ─────────────────────────────────────────────────────────────
 staging:

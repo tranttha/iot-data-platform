@@ -1,0 +1,405 @@
+{
+  "__inputs": [],
+  "__requires": [],
+  "annotations": {
+    "list": []
+  },
+  "description": "Real-time IoT sensor metrics filtered by country and metric type",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {
+      "title": "IoT Platform Overview",
+      "type": "dashboards",
+      "tags": ["iot"],
+      "asDropdown": false,
+      "includeVars": false,
+      "keepTime": true
+    }
+  ],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "title": "Pipeline Health",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "trino-datasource", "uid": "trino_lakehouse" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",    "value": null },
+              { "color": "yellow", "value": 20 },
+              { "color": "green",  "value": 50 }
+            ]
+          },
+          "mappings": []
+        }
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "id": 2,
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background"
+      },
+      "title": "Active Countries (last 5 min)",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": { "type": "trino-datasource", "uid": "trino_lakehouse" },
+          "format": 1,
+          "rawQuery": true,
+          "rawSQL": "SELECT COUNT(DISTINCT country_code) AS value\nFROM lakehouse.warehouse.fact_measurements\nWHERE event_time >= now() - INTERVAL '5' MINUTE"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "trino-datasource", "uid": "trino_lakehouse" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "blue", "value": null }]
+          }
+        }
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "id": 3,
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background"
+      },
+      "title": "Events Ingested (last 1 h) \u2014 filtered",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": { "type": "trino-datasource", "uid": "trino_lakehouse" },
+          "format": 1,
+          "rawQuery": true,
+          "rawSQL": "SELECT COUNT(*) AS value\nFROM lakehouse.warehouse.fact_measurements\nWHERE event_time >= now() - INTERVAL '1' HOUR\n  AND country_code IN ($country)"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "trino-datasource", "uid": "trino_lakehouse" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",    "value": null },
+              { "color": "yellow", "value": 10 },
+              { "color": "green",  "value": 50 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "id": 4,
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background"
+      },
+      "title": "Devices Reporting (last 5 min) \u2014 filtered",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": { "type": "trino-datasource", "uid": "trino_lakehouse" },
+          "format": 1,
+          "rawQuery": true,
+          "rawSQL": "SELECT COUNT(DISTINCT iot_device_id) AS value\nFROM lakehouse.warehouse.fact_measurements\nWHERE event_time >= now() - INTERVAL '5' MINUTE\n  AND country_code IN ($country)"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "trino-datasource", "uid": "trino_lakehouse" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dateTimeAsIso",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "blue", "value": null }]
+          }
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
+      "id": 5,
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value"
+      },
+      "title": "Latest Event Time \u2014 filtered",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": { "type": "trino-datasource", "uid": "trino_lakehouse" },
+          "format": 1,
+          "rawQuery": true,
+          "rawSQL": "SELECT MAX(event_time) AS value\nFROM lakehouse.warehouse.fact_measurements\nWHERE country_code IN ($country)"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "trino-datasource", "uid": "trino_lakehouse" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": null },
+              { "color": "yellow", "value": 120 },
+              { "color": "red",    "value": 300 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+      "id": 6,
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background"
+      },
+      "title": "Ingestion Lag (event \u2192 warehouse)",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": { "type": "trino-datasource", "uid": "trino_lakehouse" },
+          "format": 1,
+          "rawQuery": true,
+          "rawSQL": "SELECT date_diff('second', MAX(event_time), MAX(ingestion_time)) AS value\nFROM lakehouse.warehouse.fact_measurements\nWHERE ingestion_time >= now() - INTERVAL '10' MINUTE\n  AND country_code IN ($country)"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "id": 7,
+      "title": "Real-Time Metrics \u2014 Last 1 Hour",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "trino-datasource", "uid": "trino_lakehouse" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 6 },
+      "id": 8,
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "last", "max"] }
+      },
+      "title": "Selected Metric by Country (last 1 h)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": { "type": "trino-datasource", "uid": "trino_lakehouse" },
+          "format": 0,
+          "rawQuery": true,
+          "rawSQL": "SELECT date_trunc('minute', event_time) AS time,\n       country_code AS metric,\n       AVG(CASE\n         WHEN '$metric' = 'temp'       THEN temp\n         WHEN '$metric' = 'humidity'   THEN CAST(humidity AS DOUBLE)\n         WHEN '$metric' = 'pressure'   THEN CAST(pressure AS DOUBLE)\n         WHEN '$metric' = 'wind_speed' THEN wind_speed\n         WHEN '$metric' = 'uvi'        THEN uvi\n         WHEN '$metric' = 'rain_1h'    THEN COALESCE(rain_1h, 0.0)\n         WHEN '$metric' = 'wind_gust'  THEN COALESCE(wind_gust, wind_speed)\n       END) AS value\nFROM lakehouse.warehouse.fact_measurements\nWHERE event_time >= now() - INTERVAL '1' HOUR\n  AND country_code IN ($country)\nGROUP BY 1, 2\nORDER BY 1"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 },
+      "id": 9,
+      "title": "Hourly Aggregates \u2014 Last 24 Hours",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "trino-datasource", "uid": "trino_lakehouse" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
+      "id": 10,
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "last", "max"] }
+      },
+      "title": "Hourly Avg Selected Metric by Country (last 24 h)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": { "type": "trino-datasource", "uid": "trino_lakehouse" },
+          "format": 0,
+          "rawQuery": true,
+          "rawSQL": "SELECT hour_bucket AS time,\n       country_code AS metric,\n       CASE\n         WHEN '$metric' = 'temp'       THEN avg_temp\n         WHEN '$metric' = 'humidity'   THEN avg_humidity\n         WHEN '$metric' = 'pressure'   THEN avg_pressure\n         WHEN '$metric' = 'wind_speed' THEN avg_wind_speed\n         WHEN '$metric' = 'uvi'        THEN avg_uvi\n         WHEN '$metric' = 'rain_1h'    THEN avg_rain_1h\n         WHEN '$metric' = 'wind_gust'  THEN avg_wind_speed\n       END AS value\nFROM lakehouse.warehouse.fact_hourly_agg\nWHERE hour_bucket >= now() - INTERVAL '24' HOUR\n  AND country_code IN ($country)\nORDER BY 1"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 },
+      "id": 11,
+      "title": "Country Summary \u2014 Last 1 Hour",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "trino-datasource", "uid": "trino_lakehouse" },
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "country_code" },
+            "properties": [{ "id": "displayName", "value": "Country" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "device_count" },
+            "properties": [{ "id": "displayName", "value": "Devices" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "avg_temp" },
+            "properties": [
+              { "id": "displayName", "value": "Avg Temp (\u00b0C)" },
+              { "id": "unit", "value": "celsius" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "avg_humidity" },
+            "properties": [
+              { "id": "displayName", "value": "Avg Humidity (%)" },
+              { "id": "unit", "value": "percent" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "avg_pressure" },
+            "properties": [
+              { "id": "displayName", "value": "Avg Pressure (hPa)" },
+              { "id": "unit", "value": "pressurehpa" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "avg_wind_speed" },
+            "properties": [
+              { "id": "displayName", "value": "Avg Wind (m/s)" },
+              { "id": "unit", "value": "velocityms" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "avg_uvi" },
+            "properties": [{ "id": "displayName", "value": "Avg UVI" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "avg_rain_1h" },
+            "properties": [
+              { "id": "displayName", "value": "Avg Rain 1h (mm)" },
+              { "id": "unit", "value": "lengthmm" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "event_count" },
+            "properties": [{ "id": "displayName", "value": "Events" }]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 25 },
+      "id": 12,
+      "options": {
+        "sortBy": [{ "desc": false, "displayName": "Country" }]
+      },
+      "title": "Country Overview (all metrics, last 1 h)",
+      "type": "table",
+      "targets": [
+        {
+          "datasource": { "type": "trino-datasource", "uid": "trino_lakehouse" },
+          "format": 1,
+          "rawQuery": true,
+          "rawSQL": "SELECT country_code,\n       COUNT(DISTINCT iot_device_id)            AS device_count,\n       ROUND(AVG(temp), 2)                       AS avg_temp,\n       ROUND(AVG(CAST(humidity  AS DOUBLE)), 2)  AS avg_humidity,\n       ROUND(AVG(CAST(pressure  AS DOUBLE)), 2)  AS avg_pressure,\n       ROUND(AVG(wind_speed), 2)                 AS avg_wind_speed,\n       ROUND(AVG(uvi), 2)                        AS avg_uvi,\n       ROUND(AVG(COALESCE(rain_1h, 0.0)), 2)    AS avg_rain_1h,\n       COUNT(*)                                  AS event_count\nFROM lakehouse.warehouse.fact_measurements\nWHERE event_time >= now() - INTERVAL '1' HOUR\n  AND country_code IN ($country)\nGROUP BY country_code\nORDER BY country_code"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["iot", "weather", "lakehouse", "country"],
+  "templating": {
+    "list": [
+      {
+        "datasource": {
+          "type": "trino-datasource",
+          "uid": "trino_lakehouse"
+        },
+        "definition": "SELECT DISTINCT country_code FROM lakehouse.warehouse.dim_country WHERE is_current = TRUE ORDER BY 1",
+        "hide": 0,
+        "includeAll": true,
+        "multi": true,
+        "name": "country",
+        "label": "Country",
+        "query": "SELECT DISTINCT country_code FROM lakehouse.warehouse.dim_country WHERE is_current = TRUE ORDER BY 1",
+        "refresh": 2,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "type": "custom",
+        "name": "metric",
+        "label": "Metric",
+        "query": "Temperature \u00b0C : temp,Humidity % : humidity,Pressure hPa : pressure,Wind Speed m/s : wind_speed,UV Index : uvi,Rain 1h mm : rain_1h,Wind Gust m/s : wind_gust",
+        "current": {
+          "text": "Temperature \u00b0C",
+          "value": "temp"
+        },
+        "options": [
+          { "text": "Temperature \u00b0C",  "value": "temp",       "selected": true  },
+          { "text": "Humidity %",       "value": "humidity",   "selected": false },
+          { "text": "Pressure hPa",     "value": "pressure",   "selected": false },
+          { "text": "Wind Speed m/s",   "value": "wind_speed", "selected": false },
+          { "text": "UV Index",         "value": "uvi",        "selected": false },
+          { "text": "Rain 1h mm",       "value": "rain_1h",    "selected": false },
+          { "text": "Wind Gust m/s",    "value": "wind_gust",  "selected": false }
+        ],
+        "hide": 0,
+        "includeAll": false,
+        "multi": false,
+        "refresh": 0,
+        "sort": 0
+      }
+    ]
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "IoT Metrics by Country",
+  "uid": "iot-country-metrics",
+  "version": 1
+}

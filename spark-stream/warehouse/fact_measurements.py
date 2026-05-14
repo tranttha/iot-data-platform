@@ -30,7 +30,7 @@ from config import (
 _WEATHER_COLS = ["weather_id", "weather_main", "weather_description"]
 
 
-def _ensure_table(spark: SparkSession) -> None:
+def ensure_table(spark: SparkSession) -> None:
     spark.sql("CREATE NAMESPACE IF NOT EXISTS lakehouse.warehouse")
     spark.sql(f"""
         CREATE TABLE IF NOT EXISTS {FACT_TABLE} (
@@ -73,7 +73,7 @@ def _ensure_table(spark: SparkSession) -> None:
 
 def insert(spark: SparkSession, batch_df: DataFrame) -> None:
     """Resolve FKs, denormalize key columns, and append new rows to fact_measurements."""
-    _ensure_table(spark)
+    ensure_table(spark)
 
     dim_device = spark.sql(
         f"SELECT device_sk, iot_device_id"

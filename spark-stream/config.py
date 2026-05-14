@@ -39,6 +39,7 @@ _iceberg = _cfg["iceberg"]
 
 CATALOG_NAME = _iceberg["catalog_name"]
 CATALOG_TYPE = _iceberg["catalog_type"]
+HIVE_METASTORE_URI = _iceberg.get("hive_metastore_uri", "thrift://hive-metastore:9083")
 # catalog.hadoop.warehouse is constructed at runtime so it picks up WAREHOUSE_PATH
 CATALOG_WAREHOUSE = WAREHOUSE_PATH
 
